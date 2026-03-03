@@ -80,18 +80,7 @@ namespace Client.Main.Objects
 
         private static readonly Dictionary<StaticMapInstancingBatchKey, StaticMapInstancingBatch> _staticMapInstancingBatches = new Dictionary<StaticMapInstancingBatchKey, StaticMapInstancingBatch>(128);
         private static readonly List<StaticMapInstancingBatch> _staticMapInstancingActiveBatches = new List<StaticMapInstancingBatch>(128);
-        private static readonly Vector3[] _staticInstancingLightPositions = new Vector3[32];
-        private static readonly Vector3[] _staticInstancingLightColors = new Vector3[32];
-        private static readonly float[] _staticInstancingLightRadii = new float[32];
-        private static readonly float[] _staticInstancingLightIntensities = new float[32];
-        private static readonly float[] _staticInstancingLightScores = new float[32];
-        private static Vector3[] _staticInstancingLightUploadPositions = Array.Empty<Vector3>();
-        private static Vector3[] _staticInstancingLightUploadColors = Array.Empty<Vector3>();
-        private static float[] _staticInstancingLightUploadRadii = Array.Empty<float>();
-        private static float[] _staticInstancingLightUploadIntensities = Array.Empty<float>();
-        private static int _staticInstancingLastLightsVersion = -1;
-        private static int _staticInstancingLastMaxLights = -1;
-        private static int _staticInstancingLastLightCount = 0;
+        private static readonly DynamicLightGpuUploader _staticInstancingLightUploader = new(32);
         private static bool _staticMapInstancingFailed = false;
         private static EffectTechnique _cachedStaticMapInstancingTechnique;
         private static readonly Matrix _identity = Matrix.Identity;
@@ -469,148 +458,26 @@ namespace Client.Main.Objects
 
         private static void UploadStaticMapInstancingDynamicLights(Effect effect, WorldControl world)
         {
-            if (!Constants.ENABLE_DYNAMIC_LIGHTS || world?.Terrain == null)
+            var terrain = world?.Terrain;
+            if (!Constants.ENABLE_DYNAMIC_LIGHTS || terrain == null)
             {
-                effect.Parameters["ActiveLightCount"]?.SetValue(0);
-                effect.Parameters["MaxLightsToProcess"]?.SetValue(0);
+                _staticInstancingLightUploader.Clear(effect);
                 return;
             }
 
-            int uploadCapacity = ResolveDynamicLightParameterCapacity(effect, _staticInstancingLightPositions.Length);
-            if (uploadCapacity <= 0)
+            var activeLights = terrain.ActiveLights;
+            if (activeLights == null || activeLights.Count == 0)
             {
-                effect.Parameters["ActiveLightCount"]?.SetValue(0);
-                effect.Parameters["MaxLightsToProcess"]?.SetValue(0);
+                _staticInstancingLightUploader.Clear(effect);
                 return;
             }
 
             int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 8 : 16;
-            maxLights = Math.Min(maxLights, Math.Min(_staticInstancingLightPositions.Length, uploadCapacity));
+            Vector2 focus = Camera.Instance != null
+                ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
+                : Vector2.Zero;
 
-            int version = world.Terrain.ActiveLightsVersion;
-            if (version != _staticInstancingLastLightsVersion || maxLights != _staticInstancingLastMaxLights)
-            {
-                _staticInstancingLastLightsVersion = version;
-                _staticInstancingLastMaxLights = maxLights;
-                _staticInstancingLastLightCount = 0;
-
-                var lights = world.Terrain.ActiveLights;
-                if (lights != null && lights.Count > 0)
-                {
-                    Vector2 focus = Camera.Instance != null
-                        ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
-                        : Vector2.Zero;
-
-                    _staticInstancingLastLightCount = SelectInstancingLightsByProximity(lights, focus, maxLights);
-                }
-            }
-
-            _staticInstancingLastLightCount = Math.Min(_staticInstancingLastLightCount, maxLights);
-            effect.Parameters["ActiveLightCount"]?.SetValue(_staticInstancingLastLightCount);
-            effect.Parameters["MaxLightsToProcess"]?.SetValue(maxLights);
-            if (_staticInstancingLastLightCount > 0)
-            {
-                UploadStaticMapInstancingLightArrays(effect, uploadCapacity);
-            }
-        }
-
-        private static void EnsureStaticMapInstancingLightUploadBuffers(int requiredCapacity)
-        {
-            if (_staticInstancingLightUploadPositions.Length != requiredCapacity)
-            {
-                _staticInstancingLightUploadPositions = new Vector3[requiredCapacity];
-                _staticInstancingLightUploadColors = new Vector3[requiredCapacity];
-                _staticInstancingLightUploadRadii = new float[requiredCapacity];
-                _staticInstancingLightUploadIntensities = new float[requiredCapacity];
-            }
-        }
-
-        private static void UploadStaticMapInstancingLightArrays(Effect effect, int uploadCapacity)
-        {
-            if (uploadCapacity <= 0 || effect == null)
-                return;
-
-            if (uploadCapacity == _staticInstancingLightPositions.Length)
-            {
-                effect.Parameters["LightPositions"]?.SetValue(_staticInstancingLightPositions);
-                effect.Parameters["LightColors"]?.SetValue(_staticInstancingLightColors);
-                effect.Parameters["LightRadii"]?.SetValue(_staticInstancingLightRadii);
-                effect.Parameters["LightIntensities"]?.SetValue(_staticInstancingLightIntensities);
-                return;
-            }
-
-            EnsureStaticMapInstancingLightUploadBuffers(uploadCapacity);
-            Array.Copy(_staticInstancingLightPositions, _staticInstancingLightUploadPositions, uploadCapacity);
-            Array.Copy(_staticInstancingLightColors, _staticInstancingLightUploadColors, uploadCapacity);
-            Array.Copy(_staticInstancingLightRadii, _staticInstancingLightUploadRadii, uploadCapacity);
-            Array.Copy(_staticInstancingLightIntensities, _staticInstancingLightUploadIntensities, uploadCapacity);
-
-            effect.Parameters["LightPositions"]?.SetValue(_staticInstancingLightUploadPositions);
-            effect.Parameters["LightColors"]?.SetValue(_staticInstancingLightUploadColors);
-            effect.Parameters["LightRadii"]?.SetValue(_staticInstancingLightUploadRadii);
-            effect.Parameters["LightIntensities"]?.SetValue(_staticInstancingLightUploadIntensities);
-        }
-
-        private static int SelectInstancingLightsByProximity(
-            IReadOnlyList<DynamicLightSnapshot> lights,
-            Vector2 focus,
-            int maxLights)
-        {
-            int selected = 0;
-            float weakestScore = float.MaxValue;
-            int weakestIndex = 0;
-
-            for (int i = 0; i < lights.Count; i++)
-            {
-                var light = lights[i];
-                float radius = light.Radius;
-                float radiusSq = radius * radius;
-                if (radiusSq <= 0.001f)
-                    continue;
-
-                var lightPos2 = new Vector2(light.Position.X, light.Position.Y);
-                float distSq = Vector2.DistanceSquared(lightPos2, focus);
-                float score = light.Intensity * radiusSq / (radiusSq + distSq + 1f);
-
-                if (selected < maxLights)
-                {
-                    _staticInstancingLightScores[selected] = score;
-                    _staticInstancingLightPositions[selected] = light.Position;
-                    _staticInstancingLightColors[selected] = light.Color;
-                    _staticInstancingLightRadii[selected] = light.Radius;
-                    _staticInstancingLightIntensities[selected] = light.Intensity;
-
-                    if (score < weakestScore)
-                    {
-                        weakestScore = score;
-                        weakestIndex = selected;
-                    }
-
-                    selected++;
-                }
-                else if (score > weakestScore)
-                {
-                    _staticInstancingLightScores[weakestIndex] = score;
-                    _staticInstancingLightPositions[weakestIndex] = light.Position;
-                    _staticInstancingLightColors[weakestIndex] = light.Color;
-                    _staticInstancingLightRadii[weakestIndex] = light.Radius;
-                    _staticInstancingLightIntensities[weakestIndex] = light.Intensity;
-
-                    weakestScore = _staticInstancingLightScores[0];
-                    weakestIndex = 0;
-                    for (int j = 1; j < selected; j++)
-                    {
-                        float s = _staticInstancingLightScores[j];
-                        if (s < weakestScore)
-                        {
-                            weakestScore = s;
-                            weakestIndex = j;
-                        }
-                    }
-                }
-            }
-
-            return selected;
+            _staticInstancingLightUploader.Upload(effect, activeLights, focus, maxLights);
         }
     }
 }

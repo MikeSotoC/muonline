@@ -41,6 +41,7 @@ namespace Client.Main.Objects.Effects
         private float _lifeFrames = LifeFrames;
         private bool _initialized;
         private bool _lightAdded;
+        private TerrainControl? _lightTerrain;
         private bool _soundPlayed;
 
         private struct TorusParticle
@@ -292,14 +293,10 @@ namespace Client.Main.Objects.Effects
             {
                 if (!_lightAdded)
                 {
-                    World.Terrain.AddDynamicLight(_impactLight);
+                    _lightTerrain = World.Terrain;
+                    _lightTerrain.AddDynamicLight(_impactLight);
                     _lightAdded = true;
                 }
-            }
-            else if (_lightAdded)
-            {
-                World?.Terrain?.RemoveDynamicLight(_impactLight);
-                _lightAdded = false;
             }
 
             _impactLight.Position = _center + new Vector3(0f, 0f, 90f);
@@ -340,10 +337,12 @@ namespace Client.Main.Objects.Effects
 
         public override void Dispose()
         {
-            if (_lightAdded && World?.Terrain != null)
+            if (_lightAdded)
             {
-                World.Terrain.RemoveDynamicLight(_impactLight);
+                TerrainControl? terrain = _lightTerrain ?? World?.Terrain;
+                terrain?.RemoveDynamicLight(_impactLight);
                 _lightAdded = false;
+                _lightTerrain = null;
             }
 
             base.Dispose();

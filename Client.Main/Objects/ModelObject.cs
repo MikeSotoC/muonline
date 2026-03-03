@@ -39,14 +39,6 @@ namespace Client.Main.Objects
         private static readonly ArrayPool<Matrix> _matrixArrayPool = ArrayPool<Matrix>.Shared;
         private static readonly Dictionary<string, BlendState> _blendStateCache = new Dictionary<string, BlendState>();
 
-        // Cached arrays for dynamic lighting to avoid allocations
-        private static readonly Vector3[] _cachedLightPositions = new Vector3[16];
-        private static readonly Vector3[] _cachedLightColors = new Vector3[16];
-        private static readonly float[] _cachedLightRadii = new float[16];
-        private static readonly float[] _cachedLightIntensities = new float[16];
-        private static readonly float[] _cachedLightScores = new float[16];
-        private const float MinLightInfluence = 0.001f;
-
         // Cache for Environment.TickCount to reduce system calls
         private static float _cachedTime = 0f;
         private static int _lastTickCount = 0;
@@ -191,11 +183,7 @@ namespace Client.Main.Objects
         private Vector2 _lastLightSampleCell = new Vector2(float.MaxValue);
         private Vector3 _lastSampledLight = Vector3.Zero;
 
-        // Per-object cached light selection (updated on throttled light snapshot version changes)
-        private int _dynamicLightSelectionVersion = -1;
-        private int _dynamicLightSelectionMaxLights = -1;
-        private int _dynamicLightSelectionCount = 0;
-        private int[] _dynamicLightSelectionIndices;
+        private readonly DynamicLightGpuUploader _dynamicLightUploader = new(32);
 
         private int _drawModelInvocationId = 0;
         private int _dynamicLightingPreparedInvocationId = -1;

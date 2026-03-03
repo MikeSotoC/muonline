@@ -1,7 +1,10 @@
-using Client.Main.Scenes;
 using Client.Main.Controls;
-using Client.Main.Graphics;
 using Client.Main.Core.Utilities;
+using Client.Main.Controllers;
+using Client.Main.Graphics;
+using Client.Main.Models;
+using Client.Main.Objects;
+using Client.Main.Scenes;
 using Microsoft.Xna.Framework;
 using System;
 using System.Collections.Generic;
@@ -9,70 +12,77 @@ using System.Collections.Generic;
 namespace Client.Main.Controls.Terrain
 {
     /// <summary>
-    /// Manages static and dynamic lighting for the terrain.
+    /// Manages static and dynamic lights for terrain/object rendering.
+    /// Dynamic-light state is rebuilt deterministically every frame.
     /// </summary>
     public class TerrainLightManager
     {
-        private struct PrecomputedLight
-        {
-            public Vector2 Position;
-            public Vector3 ColorScaled;
-            public float Radius;
-            public float RadiusSq;
-            public float InvRadiusSq;
-        }
-
         private readonly List<DynamicLight> _dynamicLights = new();
+        private readonly HashSet<DynamicLight> _dynamicLightSet = new();
+        private readonly Dictionary<WorldObject, HashSet<DynamicLight>> _lightsByOwner = new();
         private readonly List<DynamicLightSnapshot> _activeLights = new(32);
-        private readonly List<PrecomputedLight> _precomputedActiveLights = new(32);
+
         private readonly TerrainData _data;
         private readonly GameControl _parent;
-        private float _lightUpdateTimer = 0;
-        private int _activeLightsVersion = 0;
-        private const int MaxLightCacheEntries = 4096;
-        private const float CacheQuantization = 8f; // Smaller cell to avoid cross-tile flicker
-        private const float InvCacheQuantization = 1f / CacheQuantization;
-
-        // Spatial partitioning for dynamic lights
-        private const int LightGridSize = 16; // Grid cells per side (16x16 = 256 cells for 256x256 terrain)
-        private const float LightGridCellSize = Constants.TERRAIN_SIZE * Constants.TERRAIN_SCALE / LightGridSize;
-        private readonly List<int>[,] _lightGrid = new List<int>[LightGridSize, LightGridSize];
-        private readonly int[,] _lightGridVersion = new int[LightGridSize, LightGridSize];
-        private int _currentLightGridVersion = 0;
-
-        // Per-frame influence cache to avoid recalculating the same sample positions
-        private readonly Dictionary<long, Vector3> _lightInfluenceCache = new(MaxLightCacheEntries);
-        private int _lightInfluenceCacheVersion = -1;
+        private int _activeLightsVersion;
 
         public IReadOnlyList<DynamicLight> DynamicLights => _dynamicLights;
         public IReadOnlyList<DynamicLightSnapshot> ActiveLights => _activeLights;
         public int ActiveLightsVersion => _activeLightsVersion;
+        public int OrphanLightsPrunedCount { get; private set; }
+        public int DuplicateAddsRejectedCount { get; private set; }
 
         public TerrainLightManager(TerrainData data, GameControl parent)
         {
             _data = data;
             _parent = parent;
-
-            // Initialize light grid
-            for (int y = 0; y < LightGridSize; y++)
-            {
-                for (int x = 0; x < LightGridSize; x++)
-                {
-                    _lightGrid[x, y] = new List<int>(4);
-                }
-            }
         }
 
         public void AddDynamicLight(DynamicLight light)
         {
+            if (light == null)
+                return;
+
+            if (!_dynamicLightSet.Add(light))
+            {
+                DuplicateAddsRejectedCount++;
+                return;
+            }
+
             _dynamicLights.Add(light);
-            InvalidateLightCache();
+            RegisterOwnerLight(light);
         }
 
         public void RemoveDynamicLight(DynamicLight light)
         {
+            if (light == null)
+                return;
+
+            if (!_dynamicLightSet.Remove(light))
+                return;
+
             _dynamicLights.Remove(light);
-            InvalidateLightCache();
+            UnregisterOwnerLight(light);
+        }
+
+        public void RemoveDynamicLightsByOwner(WorldObject owner)
+        {
+            if (owner == null)
+                return;
+
+            if (!_lightsByOwner.TryGetValue(owner, out var lights) || lights.Count == 0)
+            {
+                _lightsByOwner.Remove(owner);
+                return;
+            }
+
+            foreach (var light in lights)
+            {
+                if (_dynamicLightSet.Remove(light))
+                    _dynamicLights.Remove(light);
+            }
+
+            _lightsByOwner.Remove(owner);
         }
 
         public void CreateTerrainNormals()
@@ -118,50 +128,24 @@ namespace Client.Main.Controls.Terrain
 
         public void UpdateActiveLights(float deltaTime)
         {
-            _lightUpdateTimer += deltaTime;
-            float updateInterval = GetLightUpdateIntervalSeconds();
-            if (updateInterval > 0f)
-            {
-                if (_lightUpdateTimer < updateInterval)
-                    return;
-                _lightUpdateTimer %= updateInterval;
-            }
-            else
-            {
-                _lightUpdateTimer = 0f;
-            }
-
-            if (!Constants.ENABLE_DYNAMIC_LIGHTS)
-            {
-                if (_activeLights.Count > 0 || _precomputedActiveLights.Count > 0)
-                {
-                    _activeLightsVersion++;
-                    _activeLights.Clear();
-                    ClearLightGridState();
-                    InvalidateLightCache();
-                }
-                return;
-            }
+            var world = _parent.World;
+            SweepInvalidLights(world);
 
             _activeLightsVersion++;
-
             _activeLights.Clear();
-            var world = _parent.World;
-            if (_dynamicLights.Count == 0 || world == null)
-            {
-                ClearLightGridState();
-                InvalidateLightCache();
+
+            if (!Constants.ENABLE_DYNAMIC_LIGHTS || world == null || _dynamicLights.Count == 0)
                 return;
-            }
 
             bool isLoginScene = _parent.Scene is LoginScene;
-            bool enableLowQualityCheck = Constants.ENABLE_LOW_QUALITY_SWITCH &&
-                                         !(isLoginScene && !Constants.ENABLE_LOW_QUALITY_IN_LOGIN_SCENE) &&
-                                         Camera.Instance != null;
+            bool useLowQualityDistance =
+                Constants.ENABLE_LOW_QUALITY_SWITCH &&
+                !(isLoginScene && !Constants.ENABLE_LOW_QUALITY_IN_LOGIN_SCENE) &&
+                Camera.Instance != null;
 
             Vector2 cam2 = Vector2.Zero;
             float lowQualityDistSq = 0f;
-            if (enableLowQualityCheck)
+            if (useLowQualityDistance)
             {
                 var camPos = Camera.Instance.Position;
                 cam2 = new Vector2(camPos.X, camPos.Y);
@@ -172,216 +156,182 @@ namespace Client.Main.Controls.Terrain
             for (int i = 0; i < _dynamicLights.Count; i++)
             {
                 var light = _dynamicLights[i];
-                if (light.Intensity <= 0.001f) continue;
+                if (!IsLightDataValid(light) || light.Intensity <= 0.001f)
+                    continue;
 
-                if (enableLowQualityCheck)
+                if (useLowQualityDistance)
                 {
                     var lightPos = new Vector2(light.Position.X, light.Position.Y);
                     if (Vector2.DistanceSquared(cam2, lightPos) > lowQualityDistSq)
                         continue;
                 }
 
-                // Snapshot values so lighting updates are throttled (not per-frame).
                 _activeLights.Add(new DynamicLightSnapshot(light.Position, light.Color, light.Radius, light.Intensity));
             }
-
-            // Always rebuild spatial grid when lights are updated (lights can move/change)
-            RebuildLightGrid();
-
-            // Invalidate cache on light updates to ensure fresh calculations
-            InvalidateLightCache();
         }
 
         public Vector3 EvaluateDynamicLight(Vector2 position)
         {
-            if (!Constants.ENABLE_DYNAMIC_LIGHTS)
+            if (!Constants.ENABLE_DYNAMIC_LIGHTS || _activeLights.Count == 0)
                 return Vector3.Zero;
-
-            if (_precomputedActiveLights.Count == 0)
-                return Vector3.Zero;
-
-            // Cache is valid until active lights are updated again (throttled update cadence).
-            if (_lightInfluenceCacheVersion != _activeLightsVersion)
-            {
-                _lightInfluenceCache.Clear();
-                _lightInfluenceCacheVersion = _activeLightsVersion;
-            }
-
-            long posKey = GetPositionKey(position);
-            if (_lightInfluenceCache.TryGetValue(posKey, out Vector3 cached))
-                return cached;
 
             Vector3 result = Vector3.Zero;
-            Vector3 negativeResult = Vector3.Zero;  // Track negative lights separately
+            Vector3 negativeResult = Vector3.Zero;
             bool hasNegative = false;
 
-            // Use spatial partitioning to only check nearby lights
-            int gridX = (int)(position.X / LightGridCellSize);
-            int gridY = (int)(position.Y / LightGridCellSize);
+            const float cpuLightScale = 150f;
 
-            // Check current cell and adjacent cells (3x3 neighborhood)
-            for (int dy = -1; dy <= 1; dy++)
+            for (int i = 0; i < _activeLights.Count; i++)
             {
-                for (int dx = -1; dx <= 1; dx++)
+                var light = _activeLights[i];
+                float radiusSq = light.Radius * light.Radius;
+                if (radiusSq <= 0.0001f)
+                    continue;
+
+                var diff = new Vector2(light.Position.X, light.Position.Y) - position;
+                float distSq = diff.LengthSquared();
+                if (distSq > radiusSq)
+                    continue;
+
+                float t = 1f - (distSq / radiusSq);
+                float factor = t * t;
+                Vector3 contribution = light.Color * (cpuLightScale * light.Intensity * factor);
+
+                if (contribution.X < 0f || contribution.Y < 0f || contribution.Z < 0f)
                 {
-                    int gx = gridX + dx;
-                    int gy = gridY + dy;
-
-                    if (gx < 0 || gx >= LightGridSize || gy < 0 || gy >= LightGridSize)
-                        continue;
-
-                    if (_lightGridVersion[gx, gy] != _currentLightGridVersion)
-                        continue;
-
-                    var cellLights = _lightGrid[gx, gy];
-                    foreach (int lightIndex in cellLights)
+                    if (!hasNegative)
                     {
-                        if ((uint)lightIndex >= (uint)_precomputedActiveLights.Count) // Safety guard
-                            continue;
-
-                        var light = _precomputedActiveLights[lightIndex];
-                        var diff = light.Position - position;
-                        float distSq = diff.LengthSquared();
-                        if (distSq > light.RadiusSq) continue;
-
-                        // Smooth falloff: use smoothstep-like curve for natural light attenuation.
-                        // This gives a softer edge and more visible gradient than raw quadratic.
-                        float normalizedDistSq = distSq * light.InvRadiusSq;
-                        float t = 1f - normalizedDistSq;
-                        float factor = t * t; // Quartic falloff (smoother, more concentrated center)
-                        var contribution = light.ColorScaled * factor;
-
-                        // Handle negative lights (shadows) separately - use Min to prevent stacking
-                        if (light.ColorScaled.X < 0 || light.ColorScaled.Y < 0 || light.ColorScaled.Z < 0)
-                        {
-                            if (!hasNegative)
-                            {
-                                negativeResult = contribution;
-                                hasNegative = true;
-                            }
-                            else
-                            {
-                                // Use Min (most negative) instead of summing
-                                negativeResult = Vector3.Min(negativeResult, contribution);
-                            }
-                        }
-                        else
-                        {
-                            result += contribution;
-                        }
+                        negativeResult = contribution;
+                        hasNegative = true;
                     }
+                    else
+                    {
+                        negativeResult = Vector3.Min(negativeResult, contribution);
+                    }
+                }
+                else
+                {
+                    result += contribution;
                 }
             }
 
-            // Combine positive and negative light contributions
             if (hasNegative)
                 result += negativeResult;
-
-            if (_lightInfluenceCache.Count < MaxLightCacheEntries)
-                _lightInfluenceCache[posKey] = result;
 
             return result;
         }
 
-        private void RebuildLightGrid()
+        private bool SweepInvalidLights(WorldControl world)
         {
-            IncrementGridVersion();
-            _precomputedActiveLights.Clear();
+            if (_dynamicLights.Count == 0)
+                return false;
 
-            // Add active lights to appropriate grid cells (use _activeLights which are already filtered)
-            foreach (var light in _activeLights)
+            bool changed = false;
+            for (int i = _dynamicLights.Count - 1; i >= 0; i--)
             {
-                if (light.Intensity > 0.001f) // Double-check intensity
+                var light = _dynamicLights[i];
+                if (!IsLightValid(light, world))
                 {
-                    int lightIndex = _precomputedActiveLights.Count;
-                    var precomputedLight = PrecomputeLight(light);
-                    _precomputedActiveLights.Add(precomputedLight);
-                    AddLightToGrid(precomputedLight, lightIndex);
-                }
-            }
-        }
-
-        private void AddLightToGrid(PrecomputedLight light, int lightIndex)
-        {
-            // Calculate which grid cells this light affects (based on its radius)
-            float radius = light.Radius;
-            int minX = Math.Max(0, (int)((light.Position.X - radius) / LightGridCellSize));
-            int maxX = Math.Min(LightGridSize - 1, (int)((light.Position.X + radius) / LightGridCellSize));
-            int minY = Math.Max(0, (int)((light.Position.Y - radius) / LightGridCellSize));
-            int maxY = Math.Min(LightGridSize - 1, (int)((light.Position.Y + radius) / LightGridCellSize));
-
-            for (int y = minY; y <= maxY; y++)
-            {
-                for (int x = minX; x <= maxX; x++)
-                {
-                    if (_lightGridVersion[x, y] != _currentLightGridVersion)
+                    if (light != null)
                     {
-                        _lightGrid[x, y].Clear();
-                        _lightGridVersion[x, y] = _currentLightGridVersion;
+                        _dynamicLightSet.Remove(light);
+                        UnregisterOwnerLight(light);
                     }
-                    _lightGrid[x, y].Add(lightIndex);
+
+                    _dynamicLights.RemoveAt(i);
+                    OrphanLightsPrunedCount++;
+                    changed = true;
                 }
             }
+
+            return changed;
         }
 
-        private static PrecomputedLight PrecomputeLight(DynamicLightSnapshot light)
+        private static bool IsLightValid(DynamicLight light, WorldControl world)
         {
-            float radius = light.Radius;
-            float radiusSq = radius * radius;
-            float invRadiusSq = radiusSq > 0.0001f ? 1f / radiusSq : 0f;
+            if (light == null || world == null)
+                return false;
 
-            // Scale factor for CPU path: lower than 255 to approximate the GPU shader's
-            // hemisphere check and diffuse attenuation that the CPU path lacks.
-            // GPU shader multiplies by vertical (~0.3-0.5) and diffuse (~0.5-1.0),
-            // so we use ~150 instead of 255 to get a similar visual intensity while
-            // still being visible on the terrain.
-            const float CpuLightScale = 150f;
+            if (!IsLightDataValid(light))
+                return false;
 
-            return new PrecomputedLight
+            var owner = light.Owner;
+            if (owner == null)
+                return false;
+
+            if (owner.Status == GameControlStatus.Disposed || owner.Status == GameControlStatus.Error)
+                return false;
+
+            if (!ReferenceEquals(owner.World, world))
+                return false;
+
+            if (owner.Parent != null)
             {
-                Position = new Vector2(light.Position.X, light.Position.Y),
-                ColorScaled = light.Color * (CpuLightScale * light.Intensity),
-                Radius = radius,
-                RadiusSq = radiusSq,
-                InvRadiusSq = invRadiusSq
-            };
-        }
+                if (owner.Parent.Status == GameControlStatus.Disposed || owner.Parent.Status == GameControlStatus.Error)
+                    return false;
 
-        private void ClearLightGridState()
-        {
-            IncrementGridVersion();
-            _precomputedActiveLights.Clear();
-        }
-
-        private void IncrementGridVersion()
-        {
-            _currentLightGridVersion++;
-            if (_currentLightGridVersion == int.MaxValue)
-            {
-                Array.Clear(_lightGridVersion, 0, _lightGridVersion.Length);
-                _currentLightGridVersion = 1;
+                if (!ReferenceEquals(owner.Parent.World, world))
+                    return false;
             }
+            else if (!world.Objects.Contains(owner))
+            {
+                return false;
+            }
+
+            return true;
         }
 
-        private static long GetPositionKey(Vector2 position)
+        private static bool IsLightDataValid(DynamicLight light)
         {
-            int x = (int)(position.X * InvCacheQuantization);
-            int y = (int)(position.Y * InvCacheQuantization);
-            return ((long)x << 32) | (uint)y;
+            if (light == null)
+                return false;
+
+            if (!IsFinite(light.Position) || !IsFinite(light.Color))
+                return false;
+
+            if (float.IsNaN(light.Radius) || float.IsInfinity(light.Radius) || light.Radius <= 0f)
+                return false;
+
+            if (float.IsNaN(light.Intensity) || float.IsInfinity(light.Intensity))
+                return false;
+
+            return true;
         }
 
-        private void InvalidateLightCache()
+        private static bool IsFinite(Vector3 value)
         {
-            _lightInfluenceCache.Clear();
-            _lightInfluenceCacheVersion = _activeLightsVersion;
+            return !(float.IsNaN(value.X) || float.IsInfinity(value.X) ||
+                     float.IsNaN(value.Y) || float.IsInfinity(value.Y) ||
+                     float.IsNaN(value.Z) || float.IsInfinity(value.Z));
         }
 
-        private static float GetLightUpdateIntervalSeconds()
+        private void RegisterOwnerLight(DynamicLight light)
         {
-            int fps = Constants.DYNAMIC_LIGHT_UPDATE_FPS;
-            if (fps <= 0)
-                return 0f;
-            return 1f / fps;
+            var owner = light.Owner;
+            if (owner == null)
+                return;
+
+            if (!_lightsByOwner.TryGetValue(owner, out var ownerLights))
+            {
+                ownerLights = new HashSet<DynamicLight>();
+                _lightsByOwner[owner] = ownerLights;
+            }
+
+            ownerLights.Add(light);
+        }
+
+        private void UnregisterOwnerLight(DynamicLight light)
+        {
+            var owner = light.Owner;
+            if (owner == null)
+                return;
+
+            if (!_lightsByOwner.TryGetValue(owner, out var ownerLights))
+                return;
+
+            ownerLights.Remove(light);
+            if (ownerLights.Count == 0)
+                _lightsByOwner.Remove(owner);
         }
 
         private static int GetTerrainIndex(int x, int y)

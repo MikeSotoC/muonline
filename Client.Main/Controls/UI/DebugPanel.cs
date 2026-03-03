@@ -103,12 +103,24 @@ namespace Client.Main.Controls.UI
                     bool terrainGpu = walkableWorld.Terrain?.IsGpuTerrainLighting == true;
                     bool shaderAvailable = walkableWorld.Terrain?.IsDynamicLightingShaderAvailable == true;
                     bool objectsGpu = Constants.ENABLE_DYNAMIC_LIGHTING_SHADER && GraphicsManager.Instance.DynamicLightingEffect != null;
+                    int registeredDynamicLights = walkableWorld.Terrain?.DynamicLights?.Count ?? 0;
+                    int activeDynamicLights = walkableWorld.Terrain?.ActiveLights?.Count ?? 0;
+                    int prunedDynamicLights = walkableWorld.Terrain?.DynamicLightsOrphansPruned ?? 0;
+                    int rejectedDynamicAdds = walkableWorld.Terrain?.DynamicLightsDuplicateAddsRejected ?? 0;
                     _sb.Clear()
                       .Append("Lighting: Terrain=")
                       .Append(terrainGpu ? "GPU" : "CPU")
                       .Append(shaderAvailable ? "" : " (shader missing)")
                       .Append(" | Objects=")
-                      .Append(objectsGpu ? "GPU" : "CPU");
+                      .Append(objectsGpu ? "GPU" : "CPU")
+                      .Append(" | DynReg:")
+                      .Append(registeredDynamicLights)
+                      .Append(" Act:")
+                      .Append(activeDynamicLights)
+                      .Append(" Prn:")
+                      .Append(prunedDynamicLights)
+                      .Append(" Dup:")
+                      .Append(rejectedDynamicAdds);
                     _lightingStatusLabel.Text = _sb.ToString();
 
                     _sb.Clear()

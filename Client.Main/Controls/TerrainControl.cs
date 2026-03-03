@@ -2,6 +2,7 @@ using Client.Data.ATT;
 using Client.Data.MAP;
 using Client.Main.Controls.Terrain;
 using Client.Main.Graphics;
+using Client.Main.Objects;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using System;
@@ -33,6 +34,8 @@ namespace Client.Main.Controls
         public IReadOnlyList<DynamicLight> DynamicLights => _lightManager.DynamicLights;
         public IReadOnlyList<DynamicLightSnapshot> ActiveLights => _lightManager.ActiveLights;
         public int ActiveLightsVersion => _lightManager.ActiveLightsVersion;
+        public int DynamicLightsOrphansPruned => _lightManager?.OrphanLightsPrunedCount ?? 0;
+        public int DynamicLightsDuplicateAddsRejected => _lightManager?.DuplicateAddsRejectedCount ?? 0;
         public Texture2D HeightMapTexture => _data?.HeightMapTexture;
         private Dictionary<int, string> _pendingTextureMap = new();
         private bool _replaceTextureMapping;
@@ -206,8 +209,9 @@ namespace Client.Main.Controls
         }
 
         // --- Light Management (Facade) ---
-        public void AddDynamicLight(DynamicLight light) => _lightManager.AddDynamicLight(light);
-        public void RemoveDynamicLight(DynamicLight light) => _lightManager.RemoveDynamicLight(light);
+        public void AddDynamicLight(DynamicLight light) => _lightManager?.AddDynamicLight(light);
+        public void RemoveDynamicLight(DynamicLight light) => _lightManager?.RemoveDynamicLight(light);
+        public void RemoveDynamicLightsByOwner(WorldObject owner) => _lightManager?.RemoveDynamicLightsByOwner(owner);
 
         public override void Dispose()
         {

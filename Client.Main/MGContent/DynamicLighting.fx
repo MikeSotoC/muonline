@@ -61,12 +61,8 @@ sampler2D ShadowSampler = sampler_state
 #else
 #define MAX_LIGHTS 32
 #endif
-float3 LightPositions[MAX_LIGHTS];
-float3 LightColors[MAX_LIGHTS];
-float LightRadii[MAX_LIGHTS];
-float LightIntensities[MAX_LIGHTS];
-int ActiveLightCount = 0;
-int MaxLightsToProcess = MAX_LIGHTS;
+float4 LightPosInvRadius[MAX_LIGHTS];   // xyz = position, w = inverse radius
+float4 LightColorIntensity[MAX_LIGHTS]; // rgb = color, w = intensity
 
 float DebugLightingAreas = 0.0;
 float UseVertexColorLighting = 0.0;
@@ -138,7 +134,6 @@ struct PixelInput
 float3 CalculateTerrainLighting(float3 worldPos, float3 normal)
 {
     float3 dynamicLight = float3(0, 0, 0);
-    int lightCount = min(ActiveLightCount, MaxLightsToProcess);
 
 #if OPENGL
     [unroll(MAX_LIGHTS)]
@@ -147,15 +142,15 @@ float3 CalculateTerrainLighting(float3 worldPos, float3 normal)
 #endif
     for (int i = 0; i < TERRAIN_MAX_LIGHTS; i++)
     {
-        if (i >= lightCount) break;
+        float intensity = LightColorIntensity[i].w;
+        if (intensity <= 0.0) continue;
 
-        float3 lightPos = float3(LightPositions[i].x, LightPositions[i].y, LightPositions[i].z);
-        float3 lightColor = float3(LightColors[i].x, LightColors[i].y, LightColors[i].z);
+        float3 lightPos = LightPosInvRadius[i].xyz;
+        float3 lightColor = LightColorIntensity[i].xyz;
         float3 lightDir = lightPos - worldPos;
         float distSq = dot(lightDir, lightDir);
         
-        // Fast inverse radius (multiplication is faster than division)
-        float invRad = 1.0 / (LightRadii[i] + 0.0001);
+        float invRad = max(LightPosInvRadius[i].w, 0.0);
         float invRadSq = invRad * invRad;
 
         // Quadratic attenuation
@@ -169,7 +164,7 @@ float3 CalculateTerrainLighting(float3 worldPos, float3 normal)
         float invDist = rsqrt(distSq + 0.0001);
         float diffuse = saturate(dot(normal, lightDir) * invDist);
 
-        dynamicLight += lightColor * (LightIntensities[i] * diffuse * attenuation);
+        dynamicLight += lightColor * (intensity * diffuse * attenuation);
     }
     return dynamicLight;
 }
@@ -177,20 +172,20 @@ float3 CalculateTerrainLighting(float3 worldPos, float3 normal)
 float3 CalculateTerrainLightingLow(float3 worldPos, float3 normal)
 {
     float3 dynamicLight = float3(0, 0, 0);
-    int lightCount = min(min(ActiveLightCount, MaxLightsToProcess), TERRAIN_LOW_MAX_LIGHTS);
 
     // [unroll] is safe here because max iterations is strictly 8. Eliminates loop overhead completely.
     [unroll(TERRAIN_LOW_MAX_LIGHTS)]
     for (int i = 0; i < TERRAIN_LOW_MAX_LIGHTS; i++)
     {
-        if (i >= lightCount) break;
+        float intensity = LightColorIntensity[i].w;
+        if (intensity <= 0.0) continue;
 
-        float3 lightPos = float3(LightPositions[i].x, LightPositions[i].y, LightPositions[i].z);
-        float3 lightColor = float3(LightColors[i].x, LightColors[i].y, LightColors[i].z);
+        float3 lightPos = LightPosInvRadius[i].xyz;
+        float3 lightColor = LightColorIntensity[i].xyz;
         float3 lightDir = lightPos - worldPos;
         float distSq = dot(lightDir, lightDir);
         
-        float invRad = 1.0 / (LightRadii[i] + 0.0001);
+        float invRad = max(LightPosInvRadius[i].w, 0.0);
         float attenuation = saturate(1.0 - (distSq * (invRad * invRad)));
         
         float vertical = saturate((lightPos.z - worldPos.z) * invRad);
@@ -199,7 +194,7 @@ float3 CalculateTerrainLightingLow(float3 worldPos, float3 normal)
         float invDist = rsqrt(distSq + 0.0001);
         float diffuse = saturate(dot(normal, lightDir) * invDist);
 
-        dynamicLight += lightColor * (LightIntensities[i] * diffuse * attenuation);
+        dynamicLight += lightColor * (intensity * diffuse * attenuation);
     }
     return dynamicLight;
 }
@@ -207,7 +202,6 @@ float3 CalculateTerrainLightingLow(float3 worldPos, float3 normal)
 float3 CalculateDynamicLighting(float3 worldPos, float3 normal)
 {
     float3 dynamicLight = float3(0, 0, 0);
-    int lightCount = min(min(ActiveLightCount, MaxLightsToProcess), MAX_LIGHTS);
 
 #if OPENGL
     [unroll(MAX_LIGHTS)]
@@ -216,20 +210,21 @@ float3 CalculateDynamicLighting(float3 worldPos, float3 normal)
 #endif
     for (int i = 0; i < MAX_LIGHTS; i++)
     {
-        if (i >= lightCount) break;
+        float intensity = LightColorIntensity[i].w;
+        if (intensity <= 0.0) continue;
 
-        float3 lightPos = float3(LightPositions[i].x, LightPositions[i].y, LightPositions[i].z);
-        float3 lightColor = float3(LightColors[i].x, LightColors[i].y, LightColors[i].z);
+        float3 lightPos = LightPosInvRadius[i].xyz;
+        float3 lightColor = LightColorIntensity[i].xyz;
         float3 lightDir = lightPos - worldPos;
         float distSq = dot(lightDir, lightDir);
         
-        float invRad = 1.0 / (LightRadii[i] + 0.0001);
+        float invRad = max(LightPosInvRadius[i].w, 0.0);
         float attenuation = saturate(1.0 - (distSq * (invRad * invRad)));
 
         float invDist = rsqrt(distSq + 0.0001);
         float diffuse = saturate(dot(normal, lightDir) * invDist);
 
-        dynamicLight += lightColor * (LightIntensities[i] * diffuse * attenuation);
+        dynamicLight += lightColor * (intensity * diffuse * attenuation);
     }
     return dynamicLight;
 }
@@ -393,10 +388,9 @@ float4 PS_Terrain(PixelInput input) : SV_Target
     float3 normal = PrepareNormal(input.Normal);
     float3 baseLight = input.Color.rgb * GlobalLightMultiplier;
 
-    float hasActiveLights = step(0.5, float(ActiveLightCount));
-    float3 finalLight = baseLight + input.DynamicLight * TerrainDynamicIntensityScale * hasActiveLights;
+    float3 finalLight = baseLight + input.DynamicLight * TerrainDynamicIntensityScale;
 
-    float isDebugPixel = DebugLightingAreas * step(0.01, dot(input.DynamicLight, input.DynamicLight)) * hasActiveLights;
+    float isDebugPixel = DebugLightingAreas * step(0.01, dot(input.DynamicLight, input.DynamicLight));
 
     float shadowTerm = SampleShadow(input.WorldPos, normal);
     float shadowMix = lerp(1.0 - ShadowStrength, 1.0, shadowTerm);
@@ -426,10 +420,9 @@ float4 PS_Objects(PixelInput input) : SV_Target
     float3 baseLight = AmbientLight * shadowFactor + sunLight;
 
     float3 dynamicLight = CalculateDynamicLighting(input.WorldPos, normal);
-    float hasActiveLights = step(0.5, float(ActiveLightCount));
-    float3 finalLight = baseLight + dynamicLight * TerrainDynamicIntensityScale * hasActiveLights;
+    float3 finalLight = baseLight + dynamicLight * TerrainDynamicIntensityScale;
 
-    float isDebugPixel = DebugLightingAreas * step(0.01, dot(dynamicLight, dynamicLight)) * hasActiveLights;
+    float isDebugPixel = DebugLightingAreas * step(0.01, dot(dynamicLight, dynamicLight));
 
     float shadowTerm = SampleShadow(input.WorldPos, normal);
     float shadowMix = lerp(1.0 - ShadowStrength, 1.0, shadowTerm);

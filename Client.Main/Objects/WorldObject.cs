@@ -417,6 +417,9 @@ namespace Client.Main.Objects
 
             Status = GameControlStatus.Disposed;
 
+            // Centralized safeguard: detach any terrain dynamic lights owned by this object.
+            World?.Terrain?.RemoveDynamicLightsByOwner(this);
+
             var children = Children.ToArray();
             for (int i = 0; i < children.Length; i++)
             {

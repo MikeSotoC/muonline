@@ -46,6 +46,7 @@ namespace Client.Main.Objects.Effects
         private byte _stage;
         private double _lastSignalMs;
         private bool _lightAdded;
+        private TerrainControl? _lightTerrain;
 
         private SpriteBatch _spriteBatch = null!;
         private Texture2D _spiritTexture = null!;
@@ -438,14 +439,10 @@ namespace Client.Main.Objects.Effects
             {
                 if (!_lightAdded)
                 {
-                    World.Terrain.AddDynamicLight(_chargeLight);
+                    _lightTerrain = World.Terrain;
+                    _lightTerrain.AddDynamicLight(_chargeLight);
                     _lightAdded = true;
                 }
-            }
-            else if (_lightAdded)
-            {
-                World?.Terrain?.RemoveDynamicLight(_chargeLight);
-                _lightAdded = false;
             }
 
             float stageFactor = _stage / MaxNovaStage;
@@ -554,10 +551,12 @@ namespace Client.Main.Objects.Effects
 
         public override void Dispose()
         {
-            if (_lightAdded && World?.Terrain != null)
+            if (_lightAdded)
             {
-                World.Terrain.RemoveDynamicLight(_chargeLight);
+                TerrainControl? terrain = _lightTerrain ?? World?.Terrain;
+                terrain?.RemoveDynamicLight(_chargeLight);
                 _lightAdded = false;
+                _lightTerrain = null;
             }
 
             if (_registeredWorld != null)
