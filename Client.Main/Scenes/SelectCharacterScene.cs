@@ -10,6 +10,7 @@ using Client.Main.Models;
 using Client.Main.Networking;
 using Client.Main.Objects.Player;
 using Client.Main.Worlds;
+using Client.Main.Scenes.SelectCharacter;
 using Microsoft.Extensions.Logging;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -72,6 +73,7 @@ namespace Client.Main.Scenes
         // Fields
         private readonly List<(string Name, CharacterClassNumber Class, ushort Level, byte[] Appearance)> _characters;
         private SelectWorld _selectWorld;
+        private CharacterSelectionController _characterController;
         private readonly NetworkManager _networkManager;
         private ILogger<SelectCharacterScene> _logger;
         private (string Name, CharacterClassNumber Class, ushort Level, byte[] Appearance)? _selectedCharacterInfo = null;
@@ -95,8 +97,6 @@ namespace Client.Main.Scenes
         private bool _isIntentionalLogout = false;
 
         // UI Panel rendering
-        private RenderTarget2D _characterPanelSurface;
-        private bool _panelNeedsRedraw = true;
         private Rectangle _characterPanelRect;
         private Rectangle _buttonSectionRect;
         private Rectangle _characterListRect;
@@ -361,7 +361,6 @@ namespace Client.Main.Scenes
                 _exitButton.Visible = ready;
             }
 
-            _panelNeedsRedraw = true;
         }
 
         private void UpdateNavigationButtonState()
@@ -382,7 +381,7 @@ namespace Client.Main.Scenes
 
         private void MoveSelection(int direction)
         {
-            if (_characters.Count == 0 || _selectWorld == null)
+            if (_characters.Count == 0 || _characterController == null)
             {
                 return;
             }
@@ -415,22 +414,20 @@ namespace Client.Main.Scenes
             }
 
             _currentCharacterIndex = nextIndex;
-            _selectWorld.SetActiveCharacter(_currentCharacterIndex);
-            
-            // Select the character when navigating with arrows
+            _characterController.SetActiveCharacter(_currentCharacterIndex);
+
             if (_currentCharacterIndex >= 0 && _currentCharacterIndex < _characters.Count)
             {
-                var selectedCharacter = _characters[_currentCharacterIndex];
-                OnCharacterClickedForSelection(this, selectedCharacter.Name);
+                _currentlySelectedCharacterName = _characters[_currentCharacterIndex].Name;
+                PositionNavigationButtons();
+                UpdateNavigationButtonState();
             }
             else
             {
-                // Clear selection if no valid character
                 _currentlySelectedCharacterName = null;
                 UpdateNavigationButtonState();
             }
 
-            _panelNeedsRedraw = true;
         }
 
         protected override async Task LoadSceneContentWithProgress(Action<string, float> progressCallback)
@@ -443,13 +440,12 @@ namespace Client.Main.Scenes
             {
                 UpdateLoadProgress("Creating Select World...", 0.05f);
                 _selectWorld = new SelectWorld();
-                _selectWorld.CharacterClicked += OnCharacterClickedForSelection;
                 Controls.Add(_selectWorld);
 
                 UpdateLoadProgress("Initializing Select World (Graphics)...", 0.1f);
                 await _selectWorld.Initialize();
                 World = _selectWorld;
-                UpdateLoadProgress("Select World Initialized.", 0.35f); // Zwiększony postęp po inicjalizacji świata
+                UpdateLoadProgress("Select World Initialized.", 0.35f);
                 _logger.LogInformation("--- SelectCharacterScene: SelectWorld initialized and set.");
 
                 if (_selectWorld.Terrain != null)
@@ -457,15 +453,30 @@ namespace Client.Main.Scenes
                     _selectWorld.Terrain.AmbientLight = 0.6f;
                 }
 
-                if (_selectWorld != null && _characters.Any())
+                // Create controller
+                _characterController = new CharacterSelectionController(
+                    MuGame.AppLoggerFactory.CreateLogger<CharacterSelectionController>());
+
+                // Subscribe to events
+                _characterController.CharacterClicked += OnControllerCharacterClicked;
+                _characterController.CharacterDoubleClicked += OnControllerCharacterDoubleClicked;
+
+                // Connect to world
+                _selectWorld.SetController(_characterController);
+
+                if (_characters.Any())
                 {
                     UpdateLoadProgress("Preparing Character Data...", 0.40f);
-                    await _selectWorld.CreateCharacterObjects(_characters);
+                    await _characterController.CreateCharactersAsync(
+                        _characters,
+                        _selectWorld,
+                        this,
+                        _selectWorld.CharacterDisplayPosition,
+                        _selectWorld.CharacterDisplayAngle);
 
                     if (_characters.Count > 0)
                     {
                         _currentCharacterIndex = 0;
-                        _selectWorld.SetActiveCharacter(_currentCharacterIndex);
                         _currentlySelectedCharacterName = _characters[0].Name;
                     }
                     else
@@ -494,14 +505,12 @@ namespace Client.Main.Scenes
                     }
 
                     UpdateLoadProgress("Character Objects Ready.", 0.90f);
-                    _logger.LogInformation("--- SelectCharacterScene: CreateCharacterObjects finished.");
+                    _logger.LogInformation("--- SelectCharacterScene: Character creation finished.");
                 }
                 else
                 {
                     _currentCharacterIndex = -1;
-                    string message = _characters.Any()
-                        ? "Error creating character objects."
-                        : "No characters found on this account.";
+                    string message = "No characters found on this account.";
                     _logger.LogWarning("--- SelectCharacterScene: {Message}", message);
                     UpdateLoadProgress(message, 0.90f);
                     UpdateNavigationButtonState();
@@ -601,7 +610,7 @@ namespace Client.Main.Scenes
 
             _selectedCharacterInfo = _characters[matchedIndex];
             _currentCharacterIndex = matchedIndex;
-            _selectWorld?.SetActiveCharacter(_currentCharacterIndex);
+            _characterController?.SetActiveCharacter(_currentCharacterIndex);
 
             ClientConnectionState currentState = _networkManager.CurrentState;
             bool canSelect = currentState == ClientConnectionState.ConnectedToGameServer ||
@@ -626,10 +635,15 @@ namespace Client.Main.Scenes
         {
             _logger.LogDebug("Disposing SelectCharacterScene.");
             UnsubscribeFromNetworkEvents();
-            if (_selectWorld != null)
+
+            if (_characterController != null)
             {
-                _selectWorld.CharacterClicked -= OnCharacterClickedForSelection;
+                _characterController.CharacterClicked -= OnControllerCharacterClicked;
+                _characterController.CharacterDoubleClicked -= OnControllerCharacterDoubleClicked;
+                _characterController.Dispose();
+                _characterController = null;
             }
+
             CloseCharacterCreationDialog();
             if (_loadingScreen != null)
             {
@@ -798,15 +812,14 @@ namespace Client.Main.Scenes
             if (_selectWorld != null)
             {
                 _selectWorld.Interactive = false;
-                var players = _selectWorld.Players;
-                for (int i = 0; i < players.Count; i++)
+            }
+            if (_characterController != null)
+            {
+                foreach (var player in _characterController.Characters)
                 {
-                    var charObj = players[i];
-                    if (charObj == null) continue;
-                    charObj.Interactive = false;
+                    player.Interactive = false;
                 }
-                var characterLabels = _selectWorld.GetCharacterLabels();
-                foreach (var label in characterLabels.Values)
+                foreach (var label in _characterController.Labels.Values)
                 {
                     label.Visible = false;
                 }
@@ -830,17 +843,21 @@ namespace Client.Main.Scenes
             if (_selectWorld != null)
             {
                 _selectWorld.Interactive = true;
-                var players = _selectWorld.Players;
-                for (int i = 0; i < players.Count; i++)
+            }
+            if (_characterController != null)
+            {
+                foreach (var player in _characterController.Characters)
                 {
-                    var charObj = players[i];
-                    if (charObj == null) continue;
-                    charObj.Interactive = true;
+                    player.Interactive = true;
                 }
-                var characterLabels = _selectWorld.GetCharacterLabels();
-                foreach (var label in characterLabels.Values)
+                // Labels visibility will be restored by controller's active character logic
+                if (_characterController.ActiveCharacter != null)
                 {
-                    label.Visible = true;
+                    var activePlayer = _characterController.ActiveCharacter;
+                    if (_characterController.Labels.TryGetValue(activePlayer, out var label))
+                    {
+                        label.Visible = true;
+                    }
                 }
             }
             _selectedCharacterInfo = null;
@@ -929,20 +946,29 @@ namespace Client.Main.Scenes
             CloseCharacterCreationDialog();
         }
         
-        private void OnCharacterClickedForSelection(object sender, string characterName)
+        private void OnControllerCharacterClicked(object sender, string characterName)
         {
-            _logger.LogInformation("Character '{Name}' selected.", characterName);
+            _logger.LogInformation("Controller: Character '{Name}' clicked.", characterName);
             _currentlySelectedCharacterName = characterName;
-            
-            // Update button states
+
+            // Find index
+            for (int i = 0; i < _characters.Count; i++)
+            {
+                if (_characters[i].Name == characterName)
+                {
+                    _currentCharacterIndex = i;
+                    break;
+                }
+            }
+
             PositionNavigationButtons();
             UpdateNavigationButtonState();
-            
-            // Redraw panel
-            _panelNeedsRedraw = true;
-            
-            _logger.LogInformation("Character selected - Buttons updated. Delete: {Visible}, Enter: {Enabled}", 
-                _deleteCharacterButton?.Visible, _deleteCharacterButton?.Enabled);
+        }
+
+        private void OnControllerCharacterDoubleClicked(object sender, string characterName)
+        {
+            _logger.LogInformation("Controller: Character '{Name}' double-clicked.", characterName);
+            CharacterSelected(characterName);
         }
         
         private void OnDeleteCharacterButtonClick(object sender, EventArgs e)
@@ -970,8 +996,7 @@ namespace Client.Main.Scenes
                     // Clear selection
                     _currentlySelectedCharacterName = null;
                     UpdateNavigationButtonState();
-                    _panelNeedsRedraw = true;
-                }
+                        }
                 else
                 {
                     _logger.LogError("CharacterService not available - cannot delete character.");
@@ -1084,8 +1109,7 @@ namespace Client.Main.Scenes
                     
                     if (previousHovered != _hoveredCardIndex)
                     {
-                        _panelNeedsRedraw = true;
-                    }
+                                }
 
                     // Handle click (on mouse release)
                     if (mouseClicked)
@@ -1099,22 +1123,20 @@ namespace Client.Main.Scenes
 
             if (previousHovered != _hoveredCardIndex && previousHovered != -1)
             {
-                _panelNeedsRedraw = true;
-            }
+                }
         }
 
         private void SelectCharacterByIndex(int index)
         {
-            if (index < 0 || index >= _characters.Count)
+            if (index < 0 || index >= _characters.Count || _characterController == null)
                 return;
 
             _currentCharacterIndex = index;
             var character = _characters[index];
             _currentlySelectedCharacterName = character.Name;
-            _selectWorld?.SetActiveCharacter(_currentCharacterIndex);
+            _characterController.SetActiveCharacter(_currentCharacterIndex);
             PositionNavigationButtons();
             UpdateNavigationButtonState();
-            _panelNeedsRedraw = true;
 
             _logger.LogInformation("Character '{Name}' selected via card click.", character.Name);
         }
@@ -1286,7 +1308,7 @@ namespace Client.Main.Scenes
 
             _selectedCharacterInfo = _characters[matchedIndex];
             _currentCharacterIndex = matchedIndex;
-            _selectWorld?.SetActiveCharacter(_currentCharacterIndex);
+            _characterController?.SetActiveCharacter(_currentCharacterIndex);
 
             ClientConnectionState currentState = _networkManager.CurrentState;
             bool canSelect = currentState == ClientConnectionState.ConnectedToGameServer ||

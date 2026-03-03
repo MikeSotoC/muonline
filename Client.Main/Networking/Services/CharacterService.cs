@@ -18,7 +18,7 @@ namespace Client.Main.Networking.Services
     {
         private readonly ConnectionManager _connectionManager;
         private readonly ILogger<CharacterService> _logger;
-        
+
         /// <summary>
         /// Tracks the last character name that was requested for deletion.
         /// Used to update the cached character list after successful deletion.
@@ -97,13 +97,13 @@ namespace Client.Main.Networking.Services
                 return;
             }
 
-            _logger.LogInformation("Sending create character request: Name={Name}, Class={Class}...", 
+            _logger.LogInformation("Sending create character request: Name={Name}, Class={Class}...",
                 characterName, characterClass);
             try
             {
-                await _connectionManager.Connection.SendAsync(() =>
-                    PacketBuilder.BuildCreateCharacterPacket(_connectionManager.Connection.Output, characterName, characterClass));
-                _logger.LogInformation("Create character request sent: Name={Name}, Class={Class}.", 
+                await _connectionManager.Connection.SendCreateCharacterAsync(characterName, characterClass);
+
+                _logger.LogInformation("Create character request sent: Name={Name}, Class={Class}.",
                     characterName, characterClass);
             }
             catch (Exception ex)
@@ -127,12 +127,12 @@ namespace Client.Main.Networking.Services
 
             // Track the character name for use in the response handler
             LastDeletedCharacterName = characterName;
-            
+
             _logger.LogInformation("Sending delete character request: Name={Name}...", characterName);
             try
             {
-                await _connectionManager.Connection.SendAsync(() =>
-                    PacketBuilder.BuildDeleteCharacterPacket(_connectionManager.Connection.Output, characterName, securityCode));
+                await _connectionManager.Connection.SendDeleteCharacterAsync(characterName, securityCode);
+
                 _logger.LogInformation("Delete character request sent: Name={Name}.", characterName);
             }
             catch (Exception ex)
@@ -843,8 +843,8 @@ namespace Client.Main.Networking.Services
 
             try
             {
-                await _connectionManager.Connection.SendAsync(() =>
-                    PacketBuilder.BuildHitRequestPacket(_connectionManager.Connection.Output, targetId, attackAnimation, lookingDirection));
+                await _connectionManager.Connection.SendHitRequestAsync(targetId, attackAnimation, lookingDirection);
+
                 _logger.LogInformation("Hit request sent.");
             }
             catch (Exception ex)
@@ -897,8 +897,8 @@ namespace Client.Main.Networking.Services
 
             try
             {
-                await _connectionManager.Connection.SendAsync(() =>
-                    PacketBuilder.BuildConsumeItemPacket(_connectionManager.Connection.Output, itemSlot, targetSlot));
+                await _connectionManager.Connection.SendConsumeItemRequestAsync(itemSlot, targetSlot, default);
+
                 _logger.LogInformation("Consume item request sent: ItemSlot={ItemSlot}, TargetSlot={TargetSlot}.", itemSlot, targetSlot);
             }
             catch (Exception ex)
@@ -924,8 +924,8 @@ namespace Client.Main.Networking.Services
 
             try
             {
-                await _connectionManager.Connection.SendAsync(() =>
-                    PacketBuilder.BuildAreaSkillPacket(_connectionManager.Connection.Output, skillId, targetX, targetY, rotation, extraTargetId, animationCounter));
+                await _connectionManager.Connection.SendAreaSkillAsync(skillId, targetX, targetY, rotation, extraTargetId, animationCounter);
+
                 _logger.LogInformation("Area skill request sent: SkillID={SkillId}.", skillId);
             }
             catch (Exception ex)
@@ -979,7 +979,7 @@ namespace Client.Main.Networking.Services
             _logger.LogInformation("Sending stat increase request for attribute: {Attribute}...", attribute);
             try
             {
-                await _connectionManager.Connection.SendAsync(() => PacketBuilder.BuildIncreaseCharacterStatPointPacket(_connectionManager.Connection.Output, attribute));
+                await _connectionManager.Connection.SendIncreaseCharacterStatPointAsync(attribute);
                 _logger.LogInformation("Stat increase request sent for attribute: {Attribute}.", attribute);
             }
             catch (Exception ex)
@@ -991,13 +991,14 @@ namespace Client.Main.Networking.Services
         /// <summary>
         /// Sends a request to pick up a dropped item or money by its network ID.
         /// </summary>
-        public async Task SendPickupItemRequestAsync(ushort itemId, TargetProtocolVersion version)
+        /// <returns>True if the request was sent successfully, false otherwise.</returns>
+        public async Task<bool> SendPickupItemRequestAsync(ushort itemId, TargetProtocolVersion version)
         {
             ushort itemIdMasked = (ushort)(itemId & 0x7FFF);
             if (!_connectionManager.IsConnected)
             {
                 _logger.LogError("Not connected - cannot send pickup item request.");
-                return;
+                return false;
             }
 
             _logger.LogInformation("Sending pickup item request for itemId: {ItemId}...", itemIdMasked);
@@ -1015,10 +1016,12 @@ namespace Client.Main.Networking.Services
                         break;
                 }
                 _logger.LogInformation("Pickup item request sent for itemId: {ItemId}.", itemIdMasked);
+                return true;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error sending pickup item request for itemId {ItemId}.", itemIdMasked);
+                return false;
             }
         }
 

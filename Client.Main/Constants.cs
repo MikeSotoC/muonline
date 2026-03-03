@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 using Microsoft.Xna.Framework;
 
 namespace Client.Main
@@ -63,6 +64,7 @@ namespace Client.Main
         public static bool MSAA_ENABLED;
         public static bool ENABLE_DYNAMIC_LIGHTS;
         public static bool ENABLE_DYNAMIC_LIGHTING_SHADER;
+        public static bool ENABLE_GPU_SKINNING;
         public static bool ENABLE_TERRAIN_GPU_LIGHTING;
         public static bool OPTIMIZE_FOR_INTEGRATED_GPU;
         public static bool DEBUG_LIGHTING_AREAS;
@@ -70,6 +72,7 @@ namespace Client.Main
         public static bool ENABLE_MONSTER_MATERIAL_SHADER;
         public static bool ENABLE_WEAPON_TRAIL;
         public static bool ENABLE_BATCH_OPTIMIZED_SORTING;
+        public static bool ENABLE_MAP_OBJECT_INSTANCING;
         public static bool ENABLE_STATIC_CHUNK_CACHING;
         public static bool ENABLE_ITEM_MATERIAL_ANIMATION;
         public static bool ENABLE_DYNAMIC_BUFFER_POOL;
@@ -175,18 +178,19 @@ namespace Client.Main
         public static string DataPath;
         public static string DataPathUrl = "http://192.168.55.220/Data.zip";
         public static string DefaultDataPathUrl = "https://full-wkr.mu.webzen.co.kr/muweb/full/MU_Red_1_20_61_Full.zip";
+        public static string SETTINGS_PATH = "appsettings.json";
 
-        // Android-specific
-        public const float ANDROID_FOV_SCALE = 0.8f;
+        public static float FOV_SCALE = 1f;
+
+        // Supported fonts: Arial & NotoKR 
+        public static string FONT_NAME = "Arial";
+        public static Encoding DATA_TEXT_ENCODING = Encoding.UTF8;
 
         static Constants()
         {
             ApplyBaseDefaults();
 #if DEBUG
             ApplyDebugDefaults();
-#endif
-#if ANDROID
-            ApplyAndroidDefaults();
 #endif
         }
 
@@ -209,6 +213,7 @@ namespace Client.Main
             MSAA_ENABLED = false;
             ENABLE_DYNAMIC_LIGHTS = true;
             ENABLE_DYNAMIC_LIGHTING_SHADER = true;
+            ENABLE_GPU_SKINNING = false;
             ENABLE_TERRAIN_GPU_LIGHTING = true;
             OPTIMIZE_FOR_INTEGRATED_GPU = false;
             DEBUG_LIGHTING_AREAS = false;
@@ -216,6 +221,7 @@ namespace Client.Main
             ENABLE_MONSTER_MATERIAL_SHADER = true;
             ENABLE_WEAPON_TRAIL = true;
             ENABLE_BATCH_OPTIMIZED_SORTING = true;
+            ENABLE_MAP_OBJECT_INSTANCING = false;
             ENABLE_STATIC_CHUNK_CACHING = true;
             ENABLE_ITEM_MATERIAL_ANIMATION = false;
             ENABLE_DYNAMIC_BUFFER_POOL = true;
@@ -240,30 +246,10 @@ namespace Client.Main
 #if DEBUG
         private static void ApplyDebugDefaults()
         {
+            DRAW_BOUNDING_BOXES = false;
             BACKGROUND_MUSIC = false;
+            SOUND_EFFECTS = false;
             SHOW_DEBUG_PANEL = true;
-
-#if WINDOWS
-            DataPath = @"C:\Games\MU_Red_1_20_61_Full\Data";
-#endif
-        }
-#endif
-
-#if ANDROID
-        private static void ApplyAndroidDefaults()
-        {
-            DRAW_GRASS = false;
-            ENABLE_DYNAMIC_LIGHTS = false;
-            ENABLE_DYNAMIC_LIGHTING_SHADER = true;
-            ENABLE_TERRAIN_GPU_LIGHTING = false;
-            OPTIMIZE_FOR_INTEGRATED_GPU = true;
-            ENABLE_LOW_QUALITY_IN_LOGIN_SCENE = true;
-            ENABLE_ITEM_MATERIAL_SHADER = true;
-            ENABLE_MONSTER_MATERIAL_SHADER = true;
-            ENABLE_WEAPON_TRAIL = false;
-            HIGH_QUALITY_TEXTURES = false;
-            RENDER_SCALE = 0.75f;
-            DYNAMIC_LIGHT_UPDATE_FPS = 30;
         }
 #endif
     }

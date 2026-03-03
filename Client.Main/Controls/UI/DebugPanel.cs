@@ -2,6 +2,7 @@
 using Client.Main.Controllers;
 using Client.Main.Content;
 using Client.Main.Models;
+using Client.Main.Objects;
 using Microsoft.Xna.Framework;
 
 namespace Client.Main.Controls.UI
@@ -16,23 +17,21 @@ namespace Client.Main.Controls.UI
         private LabelControl _objectCursorLabel;
         private LabelControl _tileFlagsLabel;
         private LabelControl _performanceMetricsLabel;
-        private LabelControl _objectMetricsLabel; // New label for object metrics
         private LabelControl _bmdMetricsLabel;    // New label for BMD buffer metrics
-        private LabelControl _poolingMetricsLabel; // NEW: Matrix pooling stats
         private LabelControl _batchSortingLabel;   // NEW: Batch sorting status
+        private LabelControl _instancingStatusLabel;
         private LabelControl _lightingStatusLabel; // NEW: Lighting mode status
-        private LabelControl _chunkMetricsLabel;   // NEW: Chunk culling stats
+        private LabelControl _gpuSkinningStatusLabel;
         private double _updateTimer = 0;
         private const double UPDATE_INTERVAL_MS = 100; // 100ms
         private StringBuilder _sb = new StringBuilder(350); // Increased capacity for new metrics
-        private int _lastFrameIndex = -1; // Track frame changes for per-frame stats
 
         public DebugPanel()
         {
             Align = ControlAlign.Top | ControlAlign.Right;
             Margin = new Margin { Top = 10, Right = 10 };
             Padding = new Margin { Top = 15, Left = 15 };
-            ControlSize = new Point(400, 300); // Increased size for lighting + pooling metrics
+            ControlSize = new Point(400, 345); // Increased size for lighting + pooling metrics
             BackgroundColor = Color.Black * 0.6f;
             BorderColor = Color.White * 0.3f;
             BorderThickness = 2;
@@ -49,12 +48,11 @@ namespace Client.Main.Controls.UI
             Controls.Add(_objectCursorLabel = new LabelControl { Text = "Cursor Object: {0}", TextColor = Color.CadetBlue, X = posX, Y = posY += labelHeight });
             Controls.Add(_tileFlagsLabel = new LabelControl { Text = "Tile Flags: {0}", TextColor = Color.Lime, X = posX, Y = posY += labelHeight });
             Controls.Add(_lightingStatusLabel = new LabelControl { Text = "Lighting: {0}", TextColor = Color.White, X = posX, Y = posY += labelHeight });
+            Controls.Add(_gpuSkinningStatusLabel = new LabelControl { Text = "GPU Skin: {0}", TextColor = Color.LightGoldenrodYellow, X = posX, Y = posY += labelHeight });
             Controls.Add(_performanceMetricsLabel = new LabelControl { Text = "Perf: {0}", TextColor = Color.OrangeRed, X = posX, Y = posY += labelHeight });
-            Controls.Add(_objectMetricsLabel = new LabelControl { Text = "Objects: {0}", TextColor = Color.LightCyan, X = posX, Y = posY += labelHeight });
-            Controls.Add(_chunkMetricsLabel = new LabelControl { Text = "Chunks: {0}", TextColor = Color.LightGreen, X = posX, Y = posY += labelHeight });
             Controls.Add(_bmdMetricsLabel = new LabelControl { Text = "BMD: {0}", TextColor = Color.LightSkyBlue, X = posX, Y = posY += labelHeight });
-            Controls.Add(_poolingMetricsLabel = new LabelControl { Text = "Pool: {0}", TextColor = Color.Cyan, X = posX, Y = posY += labelHeight });
             Controls.Add(_batchSortingLabel = new LabelControl { Text = "Batch: {0}", TextColor = Color.Magenta, X = posX, Y = posY += labelHeight });
+            Controls.Add(_instancingStatusLabel = new LabelControl { Text = "Instancing: {0}", TextColor = Color.LightPink, X = posX, Y = posY += labelHeight });
         }
 
         public override void Update(GameTime gameTime)
@@ -63,39 +61,25 @@ namespace Client.Main.Controls.UI
 
             if (!Visible) return;
 
-#if DEBUG
-            // Capture pooling stats once per frame (double-buffered to avoid race conditions)
-            int currentFrame = MuGame.FrameIndex;
-            if (currentFrame != _lastFrameIndex)
-            {
-                _lastFrameIndex = currentFrame;
-                Client.Main.Objects.ModelObject.CaptureFrameStats();
-            }
-#endif
-
             _updateTimer += gameTime.ElapsedGameTime.TotalMilliseconds;
 
             if (_updateTimer >= UPDATE_INTERVAL_MS)
             {
                 _updateTimer = 0;
 
-                _sb.Clear().Append("FPS: ").Append((int)FPSCounter.Instance.FPS_AVG);
-                _fpsLabel.Text = _sb.ToString();
+                _fpsLabel.Text = $"FPS: {(int)FPSCounter.Instance.FPS_AVG}, UPS: {(int)UPSCounter.Instance.UPS_AVG}";
 
                 Point screenMouse = MuGame.Instance.Mouse.Position;
                 Point uiMouse = MuGame.Instance.UiMouseState.Position;
-                _sb.Clear().Append("Mouse Screen (X:").Append(screenMouse.X)
-                   .Append(", Y:").Append(screenMouse.Y)
-                   .Append(") UI (X:").Append(uiMouse.X)
-                   .Append(", Y:").Append(uiMouse.Y).Append(')');
-                _mousePosLabel.Text = _sb.ToString();
 
-                _sb.Clear().Append("FXAA: ").Append(GraphicsManager.Instance.IsFXAAEnabled ? "ON" : "OFF")
-                   .Append(" - AlphaRGB:").Append(GraphicsManager.Instance.IsAlphaRGBEnabled ? "ON" : "OFF");
-                _effectsStatusLabel.Text = _sb.ToString();
+                _mousePosLabel.Text = $"Mouse Screen (X:{screenMouse.X}, Y:{screenMouse.Y}) UI (X:{uiMouse.X}, Y:{uiMouse.Y})";
 
-                _sb.Clear().Append("Cursor Object: ").Append(World?.Scene?.MouseHoverObject != null ? World.Scene.MouseHoverObject.GetType().Name : "N/A");
-                _objectCursorLabel.Text = _sb.ToString();
+                var fxaa = GraphicsManager.Instance.IsFXAAEnabled ? "ON" : "OFF";
+                var alphargb = GraphicsManager.Instance.IsAlphaRGBEnabled ? "ON" : "OFF";
+                _effectsStatusLabel.Text = $"FXAA: {fxaa} - AlphaRGB: {alphargb}";
+
+                var cursorObj = World?.Scene?.MouseHoverObject != null ? World.Scene.MouseHoverObject.GetType().Name : "N/A";
+                _objectCursorLabel.Text = $"Cursor Object: {cursorObj}";
 
                 if (World is WalkableWorldControl walkableWorld && walkableWorld.Walker != null)
                 {
@@ -103,23 +87,18 @@ namespace Client.Main.Controls.UI
                     _mapTileLabel.Visible = true;
                     _tileFlagsLabel.Visible = true;
                     _performanceMetricsLabel.Visible = true;
-                    _objectMetricsLabel.Visible = true; // Show object metrics label
-                    _chunkMetricsLabel.Visible = true;
                     _bmdMetricsLabel.Visible = true;
                     _lightingStatusLabel.Visible = true;
+                    _gpuSkinningStatusLabel.Visible = true;
+                    _instancingStatusLabel.Visible = true;
 
-                    _sb.Clear().Append("Player Cords - X: ").Append(walkableWorld.Walker.Location.X)
-                       .Append(", Y:").Append(walkableWorld.Walker.Location.Y);
-                    _playerCordsLabel.Text = _sb.ToString();
+                    _playerCordsLabel.Text = $"Player Cords - X: {walkableWorld.Walker.Location.X}, Y: {walkableWorld.Walker.Location.Y}";
 
-                    _sb.Clear().Append("MAP Tile - X: ").Append(walkableWorld.MouseTileX)
-                       .Append(", Y:").Append(walkableWorld.MouseTileY);
-                    _mapTileLabel.Text = _sb.ToString();
+                    _mapTileLabel.Text = $"MAP Tile - X: {walkableWorld.MouseTileX}, Y: {walkableWorld.MouseTileY}";
 
                     var flags = walkableWorld.Terrain.RequestTerrainFlag((int)walkableWorld.Walker.Location.X,
                                                                          (int)walkableWorld.Walker.Location.Y);
-                    _sb.Clear().Append("Tile Flags: ").Append(flags);
-                    _tileFlagsLabel.Text = _sb.ToString();
+                    _tileFlagsLabel.Text = $"Tile Flags: {flags}";
 
                     bool terrainGpu = walkableWorld.Terrain?.IsGpuTerrainLighting == true;
                     bool shaderAvailable = walkableWorld.Terrain?.IsDynamicLightingShaderAvailable == true;
@@ -132,6 +111,15 @@ namespace Client.Main.Controls.UI
                       .Append(objectsGpu ? "GPU" : "CPU");
                     _lightingStatusLabel.Text = _sb.ToString();
 
+                    _sb.Clear()
+                      .Append("GPU Skin: Flag=")
+                      .Append(Constants.ENABLE_GPU_SKINNING ? "ON" : "OFF")
+                      .Append(" | Backend=")
+                      .Append(ModelObject.IsGpuSkinningBackendSupported ? "OK" : "N/A")
+                      .Append(" | Drawn=")
+                      .Append(ModelObject.LastFrameGpuSkinnedMeshesDrawn);
+                    _gpuSkinningStatusLabel.Text = _sb.ToString();
+
                     // Update terrain performance metrics display
                     var terrainMetrics = walkableWorld.Terrain.FrameMetrics;
                     _sb.Clear()
@@ -141,18 +129,6 @@ namespace Client.Main.Controls.UI
                        .Append($"Cel:{terrainMetrics.DrawnCells}");
                     _performanceMetricsLabel.Text = _sb.ToString();
 
-                    // Update object performance metrics display
-                    var objectMetrics = walkableWorld.ObjectMetrics;
-                    _sb.Clear().Append($"Objects: Drw:{objectMetrics.DrawnTotal}/{objectMetrics.TotalObjects} (Culled:{objectMetrics.CulledByFrustum})");
-                    _objectMetricsLabel.Text = _sb.ToString();
-
-                    _sb.Clear()
-                      .Append("Chunks: ")
-                      .Append(objectMetrics.StaticChunksVisible).Append('/').Append(objectMetrics.StaticChunksTotal)
-                      .Append(" vis, Culled:").Append(objectMetrics.StaticChunksCulled)
-                      .Append(" ObjCulled:").Append(objectMetrics.StaticObjectsCulledByChunk);
-                    _chunkMetricsLabel.Text = _sb.ToString();
-
                     // Update BMD buffer metrics
                     var bmd = BMDLoader.Instance;
                     _sb.Clear()
@@ -161,24 +137,31 @@ namespace Client.Main.Controls.UI
                       .Append($"Cache:{bmd.LastFrameCacheHits}/{bmd.LastFrameCacheMisses}");
                     _bmdMetricsLabel.Text = _sb.ToString();
 
-#if DEBUG
-                    // Update Matrix pooling metrics (DEBUG only) - per frame stats
-                    var poolStats = Client.Main.Objects.ModelObject.GetPoolingStats();
-                    _sb.Clear()
-                      .Append($"Pool/Frame: Rent:{poolStats.Rents} Ret:{poolStats.Returns} ")
-                      .Append($"Leak:{poolStats.Rents - poolStats.Returns}");
-                    _poolingMetricsLabel.Text = _sb.ToString();
-                    _poolingMetricsLabel.Visible = true;
-#else
-                    _poolingMetricsLabel.Visible = false;
-#endif
-
                     // Update batch sorting status
                     _sb.Clear()
                       .Append($"Batch Sort: {(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? "ON" : "OFF")} ")
                       .Append($"(Model grouping for state reduction)");
                     _batchSortingLabel.Text = _sb.ToString();
                     _batchSortingLabel.Visible = true;
+
+                    _sb.Clear()
+                      .Append("Instancing: ")
+                      .Append(Constants.ENABLE_MAP_OBJECT_INSTANCING ? "ON" : "OFF")
+                      .Append(" | BK:")
+                      .Append(ModelObject.IsStaticMapInstancingBackendSupported ? "OK" : "N/A")
+                      .Append(" | RT:")
+                      .Append(ModelObject.IsStaticMapInstancingRuntimeDisabled ? "OFF" : "OK")
+                      .Append(" | Obj:")
+                      .Append(ModelObject.LastFrameStaticMapInstancedObjects)
+                      .Append(" Inst:")
+                      .Append(ModelObject.LastFrameStaticMapInstancedMeshInstances)
+                      .Append(" B:")
+                      .Append(ModelObject.LastFrameStaticMapInstancedBatches)
+                      .Append(" DC:")
+                      .Append(ModelObject.LastFrameStaticMapInstancedDrawCalls)
+                      .Append(" FB:")
+                      .Append(ModelObject.LastFrameStaticMapInstancingFallbacks);
+                    _instancingStatusLabel.Text = _sb.ToString();
                 }
                 else
                 {
@@ -186,12 +169,11 @@ namespace Client.Main.Controls.UI
                     _mapTileLabel.Visible = false;
                     _tileFlagsLabel.Visible = false;
                     _performanceMetricsLabel.Visible = false;
-                    _objectMetricsLabel.Visible = false; // Hide object metrics label
-                    _chunkMetricsLabel.Visible = false;
                     _bmdMetricsLabel.Visible = false;
-                    _poolingMetricsLabel.Visible = false;
                     _batchSortingLabel.Visible = false;
                     _lightingStatusLabel.Visible = false;
+                    _gpuSkinningStatusLabel.Visible = false;
+                    _instancingStatusLabel.Visible = false;
                 }
             }
         }

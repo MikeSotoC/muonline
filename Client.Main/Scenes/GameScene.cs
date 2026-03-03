@@ -35,7 +35,7 @@ namespace Client.Main.Scenes
     public class GameScene : BaseScene
     {
         // ──────────────────────────── Fields ────────────────────────────
-        private readonly PlayerObject _hero;
+        private readonly HeroObject _hero;
         private readonly MainControl _main;
         private GameSceneMapController _mapController;
         private MapListControl _mapListControl;
@@ -60,7 +60,7 @@ namespace Client.Main.Scenes
         private GameSceneSkillController _skillController;
         private GameSceneNotificationController _notificationController;
         private GameScenePlayerMenuController _playerMenuController;
-        private GameSceneInputController _inputController;
+        private GameSceneHotkeys _hotkeys;
         private GameSceneScopeImportController _scopeImportController;
         private GameSceneObjectEditorController _objectEditorController;
         private GameSceneDuelController _duelController;
@@ -70,7 +70,7 @@ namespace Client.Main.Scenes
 
         // Performance optimization fields - track object IDs for O(1) lookups
         // ───────────────────────── Properties ─────────────────────────
-        public PlayerObject Hero => _hero;
+        public HeroObject Hero => _hero;
         public ChatLogWindow ChatLog => _chatLog;
         public InventoryControl InventoryControl => _inventoryControl;
         public TradeControl TradeControl => TradeControl.Instance;
@@ -106,7 +106,7 @@ namespace Client.Main.Scenes
             _logger?.LogDebug($"GameScene constructor called for Character: {_characterInfo.Name} ({_characterInfo.Class})");
 
             // Create the hero with the appearance data from the character list
-            _hero = new PlayerObject(new AppearanceData(characterInfo.Appearance));
+            _hero = new HeroObject(new AppearanceData(characterInfo.Appearance));
 
             _main = new MainControl(MuGame.Network.GetCharacterState());
             Controls.Add(_main);
@@ -209,7 +209,9 @@ namespace Client.Main.Scenes
             DevilSquareCountdownControl.Instance.BringToFront();
             _playerMenuController = new GameScenePlayerMenuController(this, StartWhisperToPlayer, _duelController.OnDuelRequestedFromContextMenu);
             _playerMenuController.Initialize();
-            _inputController = new GameSceneInputController(
+            _objectEditorController = new GameSceneObjectEditorController(this, _logger);
+            _objectEditorController.Initialize();
+            _hotkeys = new GameSceneHotkeys(
                 this,
                 _pauseMenu,
                 _playerMenuController,
@@ -217,9 +219,9 @@ namespace Client.Main.Scenes
                 _inventoryControl,
                 _characterInfoWindow,
                 _chatInput,
-                _chatLog);
-            _objectEditorController = new GameSceneObjectEditorController(this, _logger);
-            _objectEditorController.Initialize();
+                _chatLog,
+                _objectEditorController,
+                _logger);
 
             try
             {
@@ -510,9 +512,10 @@ namespace Client.Main.Scenes
             }
 
             var currentKeyboardState = MuGame.Instance.Keyboard;
+            var previousKeyboardState = MuGame.Instance.PrevKeyboard;
 
             base.Update(gameTime);
-            _inputController?.HandleGlobalInput(currentKeyboardState);
+            _hotkeys?.HandleGlobal(currentKeyboardState, previousKeyboardState);
 
             _notificationManager?.Update(gameTime);
             _notificationController?.ProcessPending();
@@ -526,7 +529,6 @@ namespace Client.Main.Scenes
             {
                 _playerMenuController?.ResetOnWorldUnavailable();
                 _skillController?.ClearPending();
-                _inputController?.UpdatePreviousKeyboardState(currentKeyboardState);
                 return;
             }
 
@@ -572,28 +574,7 @@ namespace Client.Main.Scenes
 
             // Handle skill usage with right-click
             _skillController?.HandleRightClickSkillUsage();
-
-            // Handle blending editor activation with left mouse click + "/" key
-            if (!IsMouseInputConsumedThisFrame &&
-                currentKeyboardState.IsKeyDown(Keys.OemQuestion) && // "/" key
-                MuGame.Instance.Mouse.LeftButton == ButtonState.Pressed &&
-                MuGame.Instance.PrevMouseState.LeftButton == ButtonState.Released)
-            {
-                _objectEditorController?.HandleBlendingEditorActivation();
-                SetMouseInputConsumed();
-            }
-
-            // Handle object deletion with left mouse click + DEL key
-            if (!IsMouseInputConsumedThisFrame &&
-                currentKeyboardState.IsKeyDown(Keys.Delete) && // DEL key
-                MuGame.Instance.Mouse.LeftButton == ButtonState.Pressed &&
-                MuGame.Instance.PrevMouseState.LeftButton == ButtonState.Released)
-            {
-                _objectEditorController?.HandleObjectDeletion();
-                SetMouseInputConsumed();
-            }
-
-            _inputController?.HandleChatLogInput(currentKeyboardState);
+            _hotkeys?.HandleInWorld(currentKeyboardState, previousKeyboardState);
 
             // Update ping every 5 seconds to reduce network overhead
             _pingTimer += gameTime.ElapsedGameTime.TotalSeconds;
@@ -719,6 +700,11 @@ namespace Client.Main.Scenes
         internal void SetWorldInternal(WorldControl world)
         {
             World = world;
+        }
+
+        internal void NotifyLocalSkillAnimation(ushort skillId)
+        {
+            _skillController?.NotifyLocalSkillAnimation(skillId);
         }
 
         public override void Dispose()

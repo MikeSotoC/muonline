@@ -17,7 +17,7 @@ namespace Client.Main.Objects.Effects
     /// Death Stab (Orb of Blow) visual effect (Skill ID 43) using original MU assets.
     /// Three-phase effect: energy charge-up, spike attack, and victim lightning impact.
     /// </summary>
-    public sealed class DeathStabEffect : WorldObject
+    public sealed class DeathStabEffect : EffectObject
     {
         private const string EnergyParticleBaseName = "RidingSpear";
         private const string SpikeBaseName = "Spear";
@@ -65,6 +65,7 @@ namespace Client.Main.Objects.Effects
             _chargeLight = new DynamicLight
             {
                 Owner = this,
+                Position = caster.WorldPosition.Translation + new Vector3(0f, 0f, 120f),
                 Color = new Vector3(0.65f, 0.85f, 1.0f),
                 Radius = 220f,
                 Intensity = 1.2f
@@ -73,6 +74,7 @@ namespace Client.Main.Objects.Effects
             _impactLight = new DynamicLight
             {
                 Owner = this,
+                Position = (target?.WorldPosition.Translation ?? caster.WorldPosition.Translation) + new Vector3(0f, 0f, 80f),
                 Color = new Vector3(0.8f, 0.95f, 1.0f),
                 Radius = 200f,
                 Intensity = 0f
@@ -101,8 +103,6 @@ namespace Client.Main.Objects.Effects
 
             if (Status != GameControlStatus.Ready)
                 return;
-
-            ForceInView();
 
             if (_caster.Status == GameControlStatus.Disposed || _caster.World == null)
             {
@@ -191,9 +191,6 @@ namespace Client.Main.Objects.Effects
 
         private void UpdateDynamicLights(int lifeInt)
         {
-            if (World?.Terrain == null)
-                return;
-
             float pulse = 0.8f + 0.2f * MathF.Sin(_time * 14f);
             bool chargeActive = lifeInt >= 8 && lifeInt <= 18;
 

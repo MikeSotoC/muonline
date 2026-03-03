@@ -15,7 +15,7 @@ namespace Client.Main.Objects.Effects
     /// Enhanced lightning bolt between two world positions (Scroll of Lightning / AT_SKILL_THUNDER).
     /// Features: true zigzag path, branching bolts, glow, sparks, impact flash, energy coronas, dynamic lighting.
     /// </summary>
-    public sealed class ScrollOfLightningEffect : WorldObject
+    public sealed class ScrollOfLightningEffect : EffectObject
     {
         private const string JointTexturePath = "Effect/JointThunder01.OZJ";
         private const string EnergyTexturePath = "Effect/Thunder01.OZJ";
@@ -218,8 +218,6 @@ namespace Client.Main.Objects.Effects
                 _ = Load();
             }
             if (Status != GameControlStatus.Ready) return;
-
-            ForceInView();
 
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _remaining -= dt;

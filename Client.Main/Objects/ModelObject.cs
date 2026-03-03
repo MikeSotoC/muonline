@@ -37,24 +37,6 @@ namespace Client.Main.Objects
         // Object pooling for Matrix arrays to reduce GC pressure
         // ArrayPool is thread-safe and extremely efficient for temporary arrays
         private static readonly ArrayPool<Matrix> _matrixArrayPool = ArrayPool<Matrix>.Shared;
-
-#if DEBUG
-        // Performance tracking for pooling (DEBUG only) - double buffered for accurate per-frame stats
-        private static long _poolRentCount = 0;
-        private static long _poolReturnCount = 0;
-        private static long _lastFrameRentCount = 0;
-        private static long _lastFrameReturnCount = 0;
-
-        public static (long Rents, long Returns) GetPoolingStats() => (_lastFrameRentCount, _lastFrameReturnCount);
-
-        public static void CaptureFrameStats()
-        {
-            // Capture current counts for display, then reset for next frame
-            _lastFrameRentCount = Interlocked.Exchange(ref _poolRentCount, 0);
-            _lastFrameReturnCount = Interlocked.Exchange(ref _poolReturnCount, 0);
-        }
-#endif
-
         private static readonly Dictionary<string, BlendState> _blendStateCache = new Dictionary<string, BlendState>();
 
         // Cached arrays for dynamic lighting to avoid allocations
@@ -82,9 +64,24 @@ namespace Client.Main.Objects
         private static readonly RasterizerState _cullNone = RasterizerState.CullNone;
 
         private static int _animationStrideSeed = 0;
+        private static int _gpuSkinnedMeshesDrawnThisFrame = 0;
 
         // Track per-pass preparation to avoid re-uploading shared effect parameters per mesh
         private static int _drawModelInvocationCounter = 0;
+        public static int LastFrameGpuSkinnedMeshesDrawn { get; private set; }
+        public static bool IsGpuSkinningBackendSupported => SupportsGpuDynamicSkinning;
+
+        public static void BeginFrameGpuSkinningMetrics()
+        {
+            LastFrameGpuSkinnedMeshesDrawn = _gpuSkinnedMeshesDrawnThisFrame;
+            _gpuSkinnedMeshesDrawnThisFrame = 0;
+            BeginFrameStaticMapInstancingMetrics();
+        }
+
+        private static void RegisterGpuSkinnedMeshDraw()
+        {
+            _gpuSkinnedMeshesDrawnThisFrame++;
+        }
 
         public static ILoggerFactory AppLoggerFactory { get; private set; }
 
@@ -99,6 +96,10 @@ namespace Client.Main.Objects
 
         private DynamicVertexBuffer[] _boneVertexBuffers;
         private DynamicIndexBuffer[] _boneIndexBuffers;
+        private VertexBuffer[] _gpuSkinVertexBuffers;
+        private IndexBuffer[] _gpuSkinIndexBuffers;
+        private int[] _gpuSkinBoneCounts;
+        private bool[] _gpuSkinMeshEnabled;
         private Texture2D[] _boneTextures;
         private TextureScript[] _scriptTextures;
         private TextureData[] _dataTextures;
@@ -125,7 +126,7 @@ namespace Client.Main.Objects
         private float _blendElapsed = 0f;
         private float _blendDuration = 0.25f;
 
-        protected int _priorAction = 0;
+        protected int _priorActionIndex = 0;
         protected double _animTime = 0.0;
 
         private LocalAnimationState _lastAnimationState;
@@ -140,6 +141,7 @@ namespace Client.Main.Objects
         private float _blendMeshLight = 1f;
         private bool _contentLoaded = false;
         private bool _boundingComputed = false;
+        private bool _dynamicBuffersFrozen = false;
 
         // Buffer invalidation flags
         private const uint BUFFER_FLAG_ANIMATION = 1u << 0;      // Animation/bones changed
@@ -168,6 +170,13 @@ namespace Client.Main.Objects
         private bool _boneMatrixCacheValid = false;
 
         private MeshBufferCache[] _meshBufferCache;
+        private const int MaxGpuSkinBones = 256;
+#if WINDOWS_DX
+        private const bool SupportsGpuDynamicSkinning = true;
+#else
+        private const bool SupportsGpuDynamicSkinning = false;
+#endif
+        private Matrix[] _gpuSkinBoneUploadBuffer = Array.Empty<Matrix>();
 
         #endregion
 
@@ -178,6 +187,7 @@ namespace Client.Main.Objects
 
         // Quantized lighting sample (reduces CPU work without visible change)
         private const float _LIGHT_SAMPLE_GRID = 8f; // world units per cell
+        private const double FrameTimeMs = 1000.0 / 60.0; // ~16.67ms at 60 FPS
         private Vector2 _lastLightSampleCell = new Vector2(float.MaxValue);
         private Vector3 _lastSampledLight = Vector3.Zero;
 
@@ -189,14 +199,12 @@ namespace Client.Main.Objects
 
         private int _drawModelInvocationId = 0;
         private int _dynamicLightingPreparedInvocationId = -1;
+        private bool _dynamicLightingPreparedWithGpuSkinning = false;
+        private int _dynamicLightingPreparedGpuBoneCount = 0;
 
         #endregion
 
         #region Instance Fields - Cached State
-
-        // Cached ModelObject children to avoid per-frame type checks and allocations
-        private ModelObject[] _cachedModelChildren = Array.Empty<ModelObject>();
-        private int _cachedChildrenCount = -1;
 
         private double _lastAnimationUpdateTime = 0;
         private double _lastFrameTimeMs = 0; // To track timing in methods without GameTime
@@ -291,7 +299,6 @@ namespace Client.Main.Objects
         public bool RenderShadow { get => _renderShadow; set { _renderShadow = value; OnRenderShadowChanged(); } }
         public float AnimationSpeed { get; set; } = 4f;
         public bool ContinuousAnimation { get; set; }
-        public bool PreventLastFrameInterpolation { get; set; }
 
         /// <summary>
         /// Indicates if this object can be rendered to a static cache surface.
@@ -323,6 +330,12 @@ namespace Client.Main.Objects
 
         public int AnimationUpdateStride { get; private set; } = 1;
         protected virtual bool RequiresPerFrameAnimation => false;
+        public bool RequiresPerFrameWorldUpdate => RequiresPerFrameAnimation;
+        protected virtual bool AllowAnimationUpdates => true;
+        protected virtual bool AllowLightingUpdates => true;
+        protected virtual bool AllowDynamicLightingShader => true;
+        protected virtual bool AllowMapObjectInstancing => true;
+        protected virtual bool FreezeDynamicBuffersAfterFirstBuild => false;
 
         #endregion
 
@@ -363,6 +376,10 @@ namespace Client.Main.Objects
             int meshCount = Model.Meshes.Length;
             _boneVertexBuffers = new DynamicVertexBuffer[meshCount];
             _boneIndexBuffers = new DynamicIndexBuffer[meshCount];
+            _gpuSkinVertexBuffers = new VertexBuffer[meshCount];
+            _gpuSkinIndexBuffers = new IndexBuffer[meshCount];
+            _gpuSkinBoneCounts = new int[meshCount];
+            _gpuSkinMeshEnabled = new bool[meshCount];
             _boneTextures = new Texture2D[meshCount];
             _scriptTextures = new TextureScript[meshCount];
             _dataTextures = new TextureData[meshCount];
@@ -418,6 +435,7 @@ namespace Client.Main.Objects
             }
 
             InvalidateBuffers(BUFFER_FLAG_ALL);
+            _dynamicBuffersFrozen = false;
             _contentLoaded = true;
 
             if (Model?.Bones != null && Model.Bones.Length > 0)
@@ -451,117 +469,85 @@ namespace Client.Main.Objects
 
         public override void Update(GameTime gameTime)
         {
-            if (World == null || !_contentLoaded) return;
+            if (World == null || !_contentLoaded || !Visible) return;
 
-            bool isVisible = Visible;
-
-            // Process animation for the parent first. This ensures its BoneTransform is up-to-date.
-            // Centralized animation (includes cross-action blending). LinkParentAnimation skips.
-            if (isVisible && !LinkParentAnimation)
+            if (!LinkParentAnimation && AllowAnimationUpdates)
             {
                 Animation(gameTime);
             }
 
+            if (LinkParentAnimation && Parent is ModelObject parent)
+            {
+                CurrentAction = parent.CurrentAction;
+                _animTime = parent._animTime;
+                _isBlending = parent._isBlending;
+                _blendElapsed = parent._blendElapsed;
+
+                if (parent._isBlending || parent.BoneTransform != null)
+                    InvalidateBuffers(BUFFER_FLAG_ANIMATION);
+            }
+
+            if (ParentBoneLink >= 0 || LinkParentAnimation)
+            {
+                RecalculateWorldPosition();
+
+                if (Parent is WalkerObject walker)
+                {
+                    int desiredStride = 1;
+                    if (!walker.IsMainWalker)
+                    {
+                        // Keep nearby animations smooth; only throttle when low-quality is active.
+                        desiredStride = walker.IsOneShotPlaying ? 1 : (LowQuality ? 4 : 1);
+                    }
+
+                    if (AnimationUpdateStride != desiredStride)
+                        SetAnimationUpdateStride(desiredStride);
+                }
+            }
+
             base.Update(gameTime);
 
-            if (isVisible)
+            if (AllowLightingUpdates && !LinkParentAnimation && _contentLoaded)
             {
-                // Update cached children if collection changed
-                EnsureModelChildrenCache();
+                // Like old code: Check if lighting has changed significantly (for static objects)
+                bool hasDynamicLightingShader = Constants.ENABLE_DYNAMIC_LIGHTING_SHADER &&
+                                               GraphicsManager.Instance.DynamicLightingEffect != null;
 
-                // Use cached array to avoid per-frame type checks
-                for (int i = 0; i < _cachedModelChildren.Length; i++)
+                Vector3 currentLight;
+
+                // CPU lighting path (shader disabled): sample terrain light on a small grid
+                if (!hasDynamicLightingShader && LightEnabled && World?.Terrain != null)
                 {
-                    var childModel = _cachedModelChildren[i];
-                    if (childModel.ParentBoneLink >= 0 || childModel.LinkParentAnimation)
+                    var pos = WorldPosition.Translation;
+                    var cell = new Vector2(
+                        MathF.Floor(pos.X / _LIGHT_SAMPLE_GRID),
+                        MathF.Floor(pos.Y / _LIGHT_SAMPLE_GRID));
+
+                    if (_lastLightSampleCell != cell)
                     {
-                        childModel.CurrentAction = this.CurrentAction;
-                        childModel._animTime = this._animTime;
-                        childModel._isBlending = this._isBlending;
-                        childModel._blendElapsed = this._blendElapsed;
-
-                        childModel.RecalculateWorldPosition();
-
-                        if (this._isBlending || this.BoneTransform != null)
-                        {
-                            childModel.InvalidateBuffers(BUFFER_FLAG_ANIMATION);
-                        }
+                        // Terrain base light
+                        _lastSampledLight = World.Terrain.EvaluateTerrainLight(pos.X, pos.Y);
+                        // Include dynamic lights on CPU path only
+                        _lastSampledLight += World.Terrain.EvaluateDynamicLight(new Vector2(pos.X, pos.Y));
+                        _lastLightSampleCell = cell;
                     }
-                }
-            }
 
-            // Throttle CPU skinning / buffer rebuild frequency for distant walkers (monsters/NPC/remote players).
-            // This affects SetDynamicBuffers() later in this Update call via AnimationUpdateStride.
-            if (this is WalkerObject walker)
-            {
-                int desiredStride = 1;
-                if (!walker.IsMainWalker)
+                    currentLight = _lastSampledLight + Light;
+                }
+                else
                 {
-                    // Keep nearby animations smooth; only throttle when low-quality is active.
-                    desiredStride = walker.IsOneShotPlaying ? 1 : (LowQuality ? 4 : 1);
+                    currentLight = LightEnabled && World?.Terrain != null
+                        ? World.Terrain.EvaluateTerrainLight(WorldPosition.Translation.X, WorldPosition.Translation.Y) + Light
+                        : Light;
                 }
 
-                if (AnimationUpdateStride != desiredStride)
-                    SetAnimationUpdateStride(desiredStride);
-
-                // Apply the same stride to linked child models (equipment/attachments) to avoid rebuilding all parts every frame.
-                if (isVisible && _cachedModelChildren.Length > 0)
-                {
-                    for (int i = 0; i < _cachedModelChildren.Length; i++)
-                    {
-                        var child = _cachedModelChildren[i];
-                        if (child.ParentBoneLink < 0 && !child.LinkParentAnimation)
-                            continue;
-
-                        if (child.AnimationUpdateStride != desiredStride)
-                            child.SetAnimationUpdateStride(desiredStride);
-                    }
-                }
-            }
-
-            if (!isVisible) return;
-
-            // Like old code: Check if lighting has changed significantly (for static objects)
-            bool hasDynamicLightingShader = Constants.ENABLE_DYNAMIC_LIGHTING_SHADER &&
-                                           GraphicsManager.Instance.DynamicLightingEffect != null;
-
-            Vector3 currentLight;
-
-            // CPU lighting path (shader disabled): sample terrain light on a small grid
-            if (!hasDynamicLightingShader && LightEnabled && World?.Terrain != null)
-            {
-                var pos = WorldPosition.Translation;
-                var cell = new Vector2(
-                    MathF.Floor(pos.X / _LIGHT_SAMPLE_GRID),
-                    MathF.Floor(pos.Y / _LIGHT_SAMPLE_GRID));
-
-                if (_lastLightSampleCell != cell)
-                {
-                    // Terrain base light
-                    _lastSampledLight = World.Terrain.EvaluateTerrainLight(pos.X, pos.Y);
-                    // Include dynamic lights on CPU path only
-                    _lastSampledLight += World.Terrain.EvaluateDynamicLight(new Vector2(pos.X, pos.Y));
-                    _lastLightSampleCell = cell;
-                }
-
-                currentLight = _lastSampledLight + Light;
-            }
-            else
-            {
-                currentLight = LightEnabled && World?.Terrain != null
-                    ? World.Terrain.EvaluateTerrainLight(WorldPosition.Translation.X, WorldPosition.Translation.Y) + Light
-                    : Light;
-            }
-
-            if (!LinkParentAnimation && _contentLoaded)
-            {
                 // PERFORMANCE: Only invalidate lighting for CPU lighting path - shader lighting doesn't need buffer rebuilds
                 if (!hasDynamicLightingShader)
                 {
                     // Reduce throttling for PlayerObjects to ensure proper rendering
                     bool isMainPlayer = this is PlayerObject p && p.IsMainWalker;
                     double lightUpdateInterval = isMainPlayer
-                        ? 16.67
+                        ? FrameTimeMs
                         : (RequiresPerFrameAnimation ? 50 : 1000); // throttle static objects heavily
                     float lightThreshold = isMainPlayer ? 0.001f : 0.01f;   // More sensitive for main player
 
@@ -587,7 +573,12 @@ namespace Client.Main.Objects
             // Like old code: always call SetDynamicBuffers when content is loaded
             if (_contentLoaded)
             {
-                SetDynamicBuffers();
+                if (!_dynamicBuffersFrozen)
+                {
+                    SetDynamicBuffers();
+                    if (FreezeDynamicBuffersAfterFirstBuild && _invalidatedBufferFlags == 0)
+                        _dynamicBuffersFrozen = true;
+                }
             }
         }
 
@@ -603,6 +594,10 @@ namespace Client.Main.Objects
             // Release graphics resources and mark content as unloaded
             _boneVertexBuffers = null;
             _boneIndexBuffers = null;
+            _gpuSkinVertexBuffers = null;
+            _gpuSkinIndexBuffers = null;
+            _gpuSkinBoneCounts = null;
+            _gpuSkinMeshEnabled = null;
             _boneTextures = null;
             _scriptTextures = null;
             _dataTextures = null;
@@ -650,35 +645,6 @@ namespace Client.Main.Objects
                 _cachedTime = currentTick * 0.001f;
             }
             return _cachedTime;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void EnsureModelChildrenCache()
-        {
-            // Check if children collection changed by comparing count
-            int currentCount = Children.Count;
-            if (_cachedChildrenCount == currentCount && _cachedModelChildren.Length > 0)
-                return;
-
-            // Rebuild cache - filter to ModelObject children only
-            int modelObjectCount = 0;
-            for (int i = 0; i < currentCount; i++)
-            {
-                if (Children[i] is ModelObject)
-                    modelObjectCount++;
-            }
-
-            if (_cachedModelChildren.Length != modelObjectCount)
-                _cachedModelChildren = new ModelObject[modelObjectCount];
-
-            int index = 0;
-            for (int i = 0; i < currentCount; i++)
-            {
-                if (Children[i] is ModelObject modelChild)
-                    _cachedModelChildren[index++] = modelChild;
-            }
-
-            _cachedChildrenCount = currentCount;
         }
 
         public void SetAnimationUpdateStride(int stride)

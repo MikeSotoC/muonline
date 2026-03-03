@@ -50,6 +50,7 @@ https://youtu.be/_ekXCQI2byE
 | **.NET SDK** | 10.0+ | [Download](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) |
 | **Git** | Latest | [Download](https://git-scm.com/downloads) |
 | **MuOnline Data** | Season 20 (1.20.61) | [Download](https://full-wkr.mu.webzen.co.kr/muweb/full/MU_Red_1_20_61_Full.zip) |
+| **Data S6 Patch** | Season 6 | [Download](https://drive.google.com/file/d/1vP1AfTDl5A22tmIJH5NzyofeFXw_Sut0/view?usp=sharing) |
 
 ### Platform-Specific Requirements
 
@@ -88,6 +89,7 @@ sudo dnf install libgdiplus openal-soft-devel
 ```bash
 xcode-select --install
 ```
+- Optional: `wine` (if you want local MGCB shader/content compilation instead of prebuilt fallback)
 </details>
 
 <details>
@@ -190,6 +192,9 @@ dotnet run --project ./MuLinux/MuLinux.csproj -f net10.0 -c Debug
 
 # macOS
 dotnet run --project ./MuMac/MuMac.csproj -f net10.0 -c Debug
+
+# macOS (force prebuilt content fallback)
+dotnet run --project ./MuMac/MuMac.csproj -f net10.0 -c Debug -p:UsePrebuiltContent=true
 ```
 
 ## 🔨 Building the Project
@@ -231,6 +236,9 @@ dotnet clean MuLinux/MuLinux.csproj && dotnet build MuLinux/MuLinux.csproj -c De
 # macOS
 dotnet clean MuMac/MuMac.csproj && dotnet build MuMac/MuMac.csproj -c Debug
 
+# macOS (force prebuilt content fallback)
+dotnet clean MuMac/MuMac.csproj && dotnet build MuMac/MuMac.csproj -c Debug -p:UsePrebuiltContent=true
+
 # Android (requires Android workload)
 dotnet workload restore
 dotnet clean MuAndroid/MuAndroid.csproj && dotnet build MuAndroid/MuAndroid.csproj -c Debug
@@ -266,7 +274,31 @@ dotnet publish ./MuLinux/MuLinux.csproj -f net10.0 -c Release -r linux-x64 --sel
 
 ```bash
 dotnet publish ./MuMac/MuMac.csproj -f net10.0 -c Release
+
+# Force prebuilt content fallback during publish
+dotnet publish ./MuMac/MuMac.csproj -f net10.0 -c Release -p:UsePrebuiltContent=true
 ```
+
+### macOS Content Build Modes (Wine vs Prebuilt)
+
+`MuMac.csproj` supports two content workflows:
+
+- **Default (preferred):** uses `Content.mgcb` and builds content normally.
+- **Fallback:** uses prebuilt `.xnb` files from:
+  - `Client.Main/MGContent/PrebuiltContent/DesktopGL/Content`
+
+How it works:
+
+- On non-Windows, if `wine` is available, build stays in default MGCB mode.
+- On non-Windows, if `wine` is not available, build automatically switches to prebuilt mode.
+- You can force fallback mode with `-p:UsePrebuiltContent=true`.
+
+To prepare prebuilt content:
+
+1. Build content on a machine/CI where MGCB shader compilation works (typically Windows or macOS with `wine`).
+2. Copy generated `DesktopGL` `.xnb` files into:
+   - `Client.Main/MGContent/PrebuiltContent/DesktopGL/Content`
+3. Keep this folder synchronized with `Client.Main/MGContent/Content.mgcb`.
 
 #### Android
 
@@ -529,6 +561,25 @@ sudo apt-get install libopenal-dev libgdiplus
 # Fedora
 sudo dnf install openal-soft-devel libgdiplus
 ```
+</details>
+
+<details>
+<summary><b>❌ macOS: MGCB fails with "Wine is not installed"</b></summary>
+
+**Solution options:**
+
+1. Install `wine` and build normally:
+   ```bash
+   dotnet build ./MuMac/MuMac.csproj -c Debug
+   ```
+2. Use prebuilt fallback mode:
+   ```bash
+   dotnet build ./MuMac/MuMac.csproj -c Debug -p:UsePrebuiltContent=true
+   ```
+
+If using fallback mode, ensure `.xnb` files exist in:
+
+- `Client.Main/MGContent/PrebuiltContent/DesktopGL/Content`
 </details>
 
 <details>

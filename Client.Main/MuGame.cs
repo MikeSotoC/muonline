@@ -1,30 +1,35 @@
-﻿using Client.Main.Controllers;
+﻿using Client.Main.Configuration;
+using Client.Main.Content;
+using Client.Main.Controllers;
+using Client.Main.Controls;
+using Client.Main.Core.Client;
+using Client.Main.Data;
+using Client.Main.Graphics;
+using Client.Main.Networking;
+using Client.Main.Objects;
 using Client.Main.Scenes;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Microsoft.Xna.Framework.Input.Touch;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using Client.Main.Configuration;
-using Client.Main.Networking;
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Client.Main.Core.Client;
-using Client.Main.Content;
-using Client.Main.Graphics;
-#if ANDROID
-using Android.App;
-#endif
+
 
 namespace Client.Main
 {
     public class MuGame : Game
     {
         private const string LocalSettingsFileName = "appsettings.local.json";
+        private const int MaxMainThreadActionsPerFrame = 96;
+        private static readonly TimeSpan MaxMainThreadActionTimePerFrame = TimeSpan.FromMilliseconds(3);
         // Static Fields
         private static Controllers.TaskScheduler _taskScheduler;
         private static readonly ConcurrentQueue<IMainThreadAction> _mainThreadActions = new ConcurrentQueue<IMainThreadAction>();
@@ -113,6 +118,8 @@ namespace Client.Main
         {
             Instance = this;
 
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
             _graphics = new GraphicsDeviceManager(this)
             {
                 PreferredBackBufferWidth = 1280,
@@ -121,26 +128,29 @@ namespace Client.Main
                 HardwareModeSwitch = false // Required for dynamic resolution changes at runtime
             };
 
-#if ANDROID
-            _graphics.IsFullScreen = true;
-            _graphics.SupportedOrientations = DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight;
-            _graphics.SynchronizeWithVerticalRetrace = true;
-            // Screen size will be configured in Initialize() using GraphicsAdapter
-            IsFixedTimeStep = false;
-            TargetElapsedTime = TimeSpan.FromMilliseconds(16.67);
-#elif IOS
-            _graphics.IsFullScreen = true;
-            _graphics.SynchronizeWithVerticalRetrace = true;
-            IsFixedTimeStep = false;
-            TargetElapsedTime = TimeSpan.FromMilliseconds(16.67);
-#else
-            if (Constants.UNLIMITED_FPS)
+            if (OperatingSystem.IsAndroid())
+            {
+                _graphics.IsFullScreen = true;
+                _graphics.SupportedOrientations = DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight;
+                _graphics.SynchronizeWithVerticalRetrace = true;
+                // Screen size will be configured in Initialize() using GraphicsAdapter
+                IsFixedTimeStep = false;
+                TargetElapsedTime = TimeSpan.FromMilliseconds(16.67);
+            }
+            else if (OperatingSystem.IsIOS())
+            {
+                _graphics.IsFullScreen = true;
+                _graphics.SynchronizeWithVerticalRetrace = true;
+                IsFixedTimeStep = false;
+                TargetElapsedTime = TimeSpan.FromMilliseconds(16.67);
+            }
+            else if (Constants.UNLIMITED_FPS)
             {
                 _graphics.SynchronizeWithVerticalRetrace = false;
                 IsFixedTimeStep = false;
                 TargetElapsedTime = TimeSpan.FromMilliseconds(1);
             }
-#endif
+
             _graphics.GraphicsProfile = GraphicsProfile.HiDef;
             _graphics.PreferredBackBufferFormat = SurfaceFormat.Color;
             _graphics.ApplyChanges();
@@ -176,29 +186,6 @@ namespace Client.Main
                 _mainThreadActions.Enqueue(new QueuedAction<TState>(action, state));
             }
         }
-
-#if ANDROID
-        private static string EnsureAndroidConfig()
-        {
-            var ctx = Application.Context!;
-            var dst = Path.Combine(ctx.FilesDir!.AbsolutePath, "appsettings.json");
-
-            if (!File.Exists(dst))
-            {
-                try
-                {
-                    using var src = ctx.Assets!.Open("appsettings.json");
-                    using var trg = File.Create(dst);
-                    src.CopyTo(trg);
-                }
-                catch (Exception copyEx)
-                {
-                    Android.Util.Log.Error("MuGame", "Cannot copy appsettings.json: " + copyEx);
-                }
-            }
-            return dst;
-        }
-#endif
 
         private static bool ValidateSettings(MuOnlineSettings settings, ILogger logger)
         {
@@ -274,47 +261,57 @@ namespace Client.Main
         /// </summary>
         private Point GetActualScreenSize()
         {
-#if ANDROID || IOS
-            // Use GraphicsAdapter to get actual display size
-            var adapter = base.GraphicsDevice?.Adapter ?? GraphicsAdapter.DefaultAdapter;
-            if (adapter != null)
+            if (OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
             {
-                var displayMode = adapter.CurrentDisplayMode;
-                return new Point(displayMode.Width, displayMode.Height);
+                // Use GraphicsAdapter to get actual display size
+                var adapter = base.GraphicsDevice?.Adapter ?? GraphicsAdapter.DefaultAdapter;
+                if (adapter != null)
+                {
+                    var displayMode = adapter.CurrentDisplayMode;
+                    return new Point(displayMode.Width, displayMode.Height);
+                }
+
+                // Fallback to configured size
+                return new Point(_graphics.PreferredBackBufferWidth, _graphics.PreferredBackBufferHeight);
+            }
+            else
+            {
+                return new Point(_graphics.PreferredBackBufferWidth, _graphics.PreferredBackBufferHeight);
+            }
+        }
+
+        private static (string Directory, string FileName) ResolveSettingsFileLocation()
+        {
+            string configuredPath = string.IsNullOrWhiteSpace(Constants.SETTINGS_PATH)
+                ? "appsettings.json"
+                : Constants.SETTINGS_PATH;
+
+            if (Path.IsPathRooted(configuredPath))
+            {
+                string fullPath = Path.GetFullPath(configuredPath);
+                return (Path.GetDirectoryName(fullPath) ?? AppContext.BaseDirectory, Path.GetFileName(fullPath));
             }
 
-            // Fallback to configured size
-            return new Point(_graphics.PreferredBackBufferWidth, _graphics.PreferredBackBufferHeight);
-#else
-            return new Point(_graphics.PreferredBackBufferWidth, _graphics.PreferredBackBufferHeight);
-#endif
+            // Prefer output folder so "dotnet run --project ..." works from any cwd.
+            string outputCandidate = Path.Combine(AppContext.BaseDirectory, configuredPath);
+            if (File.Exists(outputCandidate))
+            {
+                return (Path.GetDirectoryName(outputCandidate) ?? AppContext.BaseDirectory, Path.GetFileName(outputCandidate));
+            }
+
+            string currentDirectoryCandidate = Path.GetFullPath(configuredPath);
+            return (Path.GetDirectoryName(currentDirectoryCandidate) ?? AppContext.BaseDirectory, Path.GetFileName(currentDirectoryCandidate));
         }
 
         protected override void Initialize()
         {
-#if ANDROID
-            Android.Util.Log.Info("MuGame", "=== Initialize() START ===");
-#endif
-            // --- Configuration Setup ---
-#if ANDROID
-            Android.Util.Log.Info("MuGame", "About to call EnsureAndroidConfig()");
-            string cfgPath = EnsureAndroidConfig();
-            Android.Util.Log.Info("MuGame", $"Config path: {cfgPath}");
-            ConfigDirectory = Path.GetDirectoryName(cfgPath)!;
+            (string configDirectory, string configFileName) = ResolveSettingsFileLocation();
+            ConfigDirectory = configDirectory;
             AppConfiguration = new ConfigurationBuilder()
                 .SetBasePath(ConfigDirectory)
-                .AddJsonFile(Path.GetFileName(cfgPath), optional: false, reloadOnChange: true)
+                .AddJsonFile(configFileName, optional: false, reloadOnChange: true)
                 .AddJsonFile(LocalSettingsFileName, optional: true, reloadOnChange: true)
                 .Build();
-            Android.Util.Log.Info("MuGame", "AppConfiguration created");
-#else // Windows, Linux, etc.
-            ConfigDirectory = AppContext.BaseDirectory;
-            AppConfiguration = new ConfigurationBuilder()
-                .SetBasePath(ConfigDirectory)
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .AddJsonFile(LocalSettingsFileName, optional: true, reloadOnChange: true)
-                .Build();
-#endif
 
             // --- Logging Setup ---
             AppLoggerFactory = LoggerFactory.Create(builder =>
@@ -328,11 +325,6 @@ namespace Client.Main
                     AppConfiguration.GetSection("Logging:SimpleConsole").Bind(options);
                     options.IncludeScopes = true; // Optional: Include scopes if you use them
                 });
-
-#if ANDROID
-                // Add file logger for Android - logs to Downloads folder
-                builder.AddProvider(new Client.Main.Platform.Android.AndroidFileLoggerProvider());
-#endif
             });
 
             _logger = AppLoggerFactory.CreateLogger<MuGame>();
@@ -369,48 +361,53 @@ namespace Client.Main
             ApplyGraphicsOptions();
 
             // Configure screen size for mobile platforms AFTER graphics device is ready
-#if ANDROID
-            var screenSize = GetActualScreenSize();
-            _graphics.PreferredBackBufferWidth = screenSize.X;
-            _graphics.PreferredBackBufferHeight = screenSize.Y;
-            _graphics.ApplyChanges();
+            if (OperatingSystem.IsAndroid())
+            {
+                var screenSize = GetActualScreenSize();
+                _graphics.PreferredBackBufferWidth = screenSize.X;
+                _graphics.PreferredBackBufferHeight = screenSize.Y;
+                _graphics.ApplyChanges();
 
-            UiScaler.Configure(
-                screenSize.X,
-                screenSize.Y,
-                Constants.BASE_UI_WIDTH,
-                Constants.BASE_UI_HEIGHT,
-                ScaleMode.Stretch);
+                UiScaler.Configure(
+                    screenSize.X,
+                    screenSize.Y,
+                    Constants.BASE_UI_WIDTH,
+                    Constants.BASE_UI_HEIGHT,
+                    ScaleMode.Stretch);
 
-            bootLogger.LogInformation("✅ Android UiScaler configured: Screen={Width}x{Height}, Virtual={VWidth}x{VHeight}, ScaleX={ScaleX:F4}, ScaleY={ScaleY:F4}",
-                screenSize.X, screenSize.Y,
-                Constants.BASE_UI_WIDTH, Constants.BASE_UI_HEIGHT,
-                UiScaler.ScaleX, UiScaler.ScaleY);
-#elif IOS
-            var screenSize = GetActualScreenSize();
-            _graphics.PreferredBackBufferWidth = screenSize.X;
-            _graphics.PreferredBackBufferHeight = screenSize.Y;
-            _graphics.ApplyChanges();
+                bootLogger.LogInformation("✅ Android UiScaler configured: Screen={Width}x{Height}, Virtual={VWidth}x{VHeight}, ScaleX={ScaleX:F4}, ScaleY={ScaleY:F4}",
+                    screenSize.X, screenSize.Y,
+                    Constants.BASE_UI_WIDTH, Constants.BASE_UI_HEIGHT,
+                    UiScaler.ScaleX, UiScaler.ScaleY);
+            }
+            else if (OperatingSystem.IsIOS())
+            {
+                var screenSize = GetActualScreenSize();
+                _graphics.PreferredBackBufferWidth = screenSize.X;
+                _graphics.PreferredBackBufferHeight = screenSize.Y;
+                _graphics.ApplyChanges();
 
-            UiScaler.Configure(
-                screenSize.X,
-                screenSize.Y,
-                Constants.BASE_UI_WIDTH,
-                Constants.BASE_UI_HEIGHT,
-                ScaleMode.Stretch);
+                UiScaler.Configure(
+                    screenSize.X,
+                    screenSize.Y,
+                    Constants.BASE_UI_WIDTH,
+                    Constants.BASE_UI_HEIGHT,
+                    ScaleMode.Stretch);
 
-            bootLogger.LogInformation("✅ iOS UiScaler configured: Screen={Width}x{Height}, Virtual={VWidth}x{VHeight}, ScaleX={ScaleX:F4}, ScaleY={ScaleY:F4}",
-                screenSize.X, screenSize.Y,
-                Constants.BASE_UI_WIDTH, Constants.BASE_UI_HEIGHT,
-                UiScaler.ScaleX, UiScaler.ScaleY);
-#else
-            UiScaler.Configure(
-                _graphics.PreferredBackBufferWidth,
-                _graphics.PreferredBackBufferHeight,
-                Constants.BASE_UI_WIDTH,
-                Constants.BASE_UI_HEIGHT,
-                ScaleMode.Uniform);
-#endif
+                bootLogger.LogInformation("✅ iOS UiScaler configured: Screen={Width}x{Height}, Virtual={VWidth}x{VHeight}, ScaleX={ScaleX:F4}, ScaleY={ScaleY:F4}",
+                    screenSize.X, screenSize.Y,
+                    Constants.BASE_UI_WIDTH, Constants.BASE_UI_HEIGHT,
+                    UiScaler.ScaleX, UiScaler.ScaleY);
+            }
+            else
+            {
+                UiScaler.Configure(
+                   _graphics.PreferredBackBufferWidth,
+                   _graphics.PreferredBackBufferHeight,
+                   Constants.BASE_UI_WIDTH,
+                   Constants.BASE_UI_HEIGHT,
+                   ScaleMode.Uniform);
+            }
 
             _logger?.LogDebug("UI scale factor set to {Scale:F3} (virtual {VirtualWidth}x{VirtualHeight} -> actual {ActualWidth}x{ActualHeight}).",
                 UiScaler.Scale,
@@ -432,11 +429,9 @@ namespace Client.Main
 
         protected override void Update(GameTime gameTime)
         {
-            // --- Process Main Thread Actions via TaskScheduler ---
-            while (_mainThreadActions.TryDequeue(out var action))
-            {
-                _taskScheduler.QueueTask(action.Invoke, Controllers.TaskScheduler.Priority.Normal);
-            }
+            UPSCounter.Instance.CalcUPS(gameTime);
+
+            ProcessMainThreadActions();
 
             // Process prioritized tasks using the task scheduler
             _taskScheduler.ProcessFrame();
@@ -448,6 +443,7 @@ namespace Client.Main
                 UpdateInputInfo(gameTime);
                 CheckShaderToggles();
                 SunCycleManager.Update();
+                Camera.Instance.UpdateShake((float)gameTime.ElapsedGameTime.TotalSeconds);
 
                 try // inner try for ActiveScene.Update
                 {
@@ -475,6 +471,33 @@ namespace Client.Main
             {
                 _logger?.LogCritical(e, "Unhandled exception in MuGame.Update loop (outside scene/base update)!");
                 // Exit();
+            }
+        }
+
+        private void ProcessMainThreadActions()
+        {
+            if (_mainThreadActions.IsEmpty)
+                return;
+
+            int processed = 0;
+            long frameStart = Stopwatch.GetTimestamp();
+
+            while (processed < MaxMainThreadActionsPerFrame &&
+                   _mainThreadActions.TryDequeue(out var action))
+            {
+                try
+                {
+                    action.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "Error executing main-thread scheduled action.");
+                }
+
+                processed++;
+
+                if (Stopwatch.GetElapsedTime(frameStart) >= MaxMainThreadActionTimePerFrame)
+                    break;
             }
         }
 
@@ -524,10 +547,18 @@ namespace Client.Main
                 // Initialize frame-based optimizations
                 DynamicBufferPool.BeginFrame(FrameIndex);
                 BMDLoader.Instance.BeginFrame();
-                
+                ModelObject.BeginFrameGpuSkinningMetrics();
+
                 FPSCounter.Instance.CalcFPS(gameTime);
-                DrawSceneToMainRenderTarget(gameTime);
-                ApplyPostProcessingEffects();
+                if (ShouldUseIntermediateRenderTarget())
+                {
+                    DrawSceneToMainRenderTarget(gameTime);
+                    ApplyPostProcessingEffects();
+                }
+                else
+                {
+                    DrawSceneDirectToBackBuffer(gameTime);
+                }
                 base.Draw(gameTime);
             }
             catch (Exception e)
@@ -722,35 +753,37 @@ namespace Client.Main
             }
             else
             {
-                // CASE 2: No touch
-#if ANDROID
-                // Keep the cursor at the last touch position when finger is lifted.
-                // This prevents the UI system from thinking we clicked outside the control.
-                // The cursor will stay at this position until next touch - we DON'T move it to (-1, -1).
+                if (OperatingSystem.IsAndroid())
+                {
+                    // Keep the cursor at the last touch position when finger is lifted.
+                    // This prevents the UI system from thinking we clicked outside the control.
+                    // The cursor will stay at this position until next touch - we DON'T move it to (-1, -1).
 
-                UiMousePosition = PrevUiMouseState.Position;
-                UiTouchPosition = PrevUiMouseState.Position;
+                    UiMousePosition = PrevUiMouseState.Position;
+                    UiTouchPosition = PrevUiMouseState.Position;
 
-                UiMouseState = new Microsoft.Xna.Framework.Input.MouseState(
-                    UiMousePosition.X, UiMousePosition.Y,
-                    0,
-                    Microsoft.Xna.Framework.Input.ButtonState.Released,
-                    Microsoft.Xna.Framework.Input.ButtonState.Released, Microsoft.Xna.Framework.Input.ButtonState.Released, Microsoft.Xna.Framework.Input.ButtonState.Released, Microsoft.Xna.Framework.Input.ButtonState.Released);
-#else
-                // WINDOWS: Use standard mouse
-                UiMousePosition = UiScaler.ToVirtual(Mouse.Position);
-                UiTouchPosition = UiMousePosition;
+                    UiMouseState = new Microsoft.Xna.Framework.Input.MouseState(
+                        UiMousePosition.X, UiMousePosition.Y,
+                        0,
+                        Microsoft.Xna.Framework.Input.ButtonState.Released,
+                        Microsoft.Xna.Framework.Input.ButtonState.Released, Microsoft.Xna.Framework.Input.ButtonState.Released, Microsoft.Xna.Framework.Input.ButtonState.Released, Microsoft.Xna.Framework.Input.ButtonState.Released);
+                }
+                else
+                {
+                    // WINDOWS: Use standard mouse
+                    UiMousePosition = UiScaler.ToVirtual(Mouse.Position);
+                    UiTouchPosition = UiMousePosition;
 
-                UiMouseState = new Microsoft.Xna.Framework.Input.MouseState(
-                    UiMousePosition.X,
-                    UiMousePosition.Y,
-                    Mouse.ScrollWheelValue,
-                    Mouse.LeftButton,
-                    Mouse.MiddleButton,
-                    Mouse.RightButton,
-                    Mouse.XButton1,
-                    Mouse.XButton2);
-#endif
+                    UiMouseState = new Microsoft.Xna.Framework.Input.MouseState(
+                        UiMousePosition.X,
+                        UiMousePosition.Y,
+                        Mouse.ScrollWheelValue,
+                        Mouse.LeftButton,
+                        Mouse.MiddleButton,
+                        Mouse.RightButton,
+                        Mouse.XButton1,
+                        Mouse.XButton2);
+                }
             }
 
             // Update MouseRay when mouse position changes OR when touch position changes
@@ -834,6 +867,35 @@ namespace Client.Main
             GraphicsDevice.SetRenderTarget(null);
         }
 
+        private void DrawSceneDirectToBackBuffer(GameTime gameTime)
+        {
+            GraphicsDevice.SetRenderTarget(null);
+            GraphicsDevice.Clear(Color.Black);
+
+            // Keep the same scene state setup as the intermediate render path.
+            GraphicsDevice.RasterizerState = RasterizerState.CullCounterClockwise;
+            GraphicsDevice.DepthStencilState = DepthStencilState.Default;
+            GraphicsDevice.BlendState = BlendState.AlphaBlend;
+
+            ActiveScene?.Draw(gameTime);
+            ActiveScene?.DrawAfter(gameTime);
+        }
+
+        private static bool ShouldUseIntermediateRenderTarget()
+        {
+            // Required when resolution scaling is active or gamma-correction pass is needed.
+            if (MathF.Abs(Constants.RENDER_SCALE - 1.0f) > 0.0001f || Constants.MSAA_ENABLED)
+                return true;
+
+            var graphics = GraphicsManager.Instance;
+            if (graphics == null)
+                return false;
+
+            bool alphaRgb = graphics.IsAlphaRGBEnabled && graphics.AlphaRGBEffect != null;
+            bool fxaa = graphics.IsFXAAEnabled && graphics.FXAAEffect != null;
+            return alphaRgb || fxaa;
+        }
+
         private void ApplyPostProcessingEffects()
         {
             RenderTarget2D sourceTarget = GraphicsManager.Instance.MainRenderTarget;
@@ -904,72 +966,77 @@ namespace Client.Main
                 return;
             }
 
-#if ANDROID
-            // On Android, use actual screen size from GraphicsAdapter
-            var screenSize = GetActualScreenSize();
-            _graphics.PreferredBackBufferWidth = screenSize.X;
-            _graphics.PreferredBackBufferHeight = screenSize.Y;
-            _graphics.ApplyChanges();
+            if (OperatingSystem.IsAndroid())
+            {
+                // On Android, use actual screen size from GraphicsAdapter
+                var screenSize = GetActualScreenSize();
+                _graphics.PreferredBackBufferWidth = screenSize.X;
+                _graphics.PreferredBackBufferHeight = screenSize.Y;
+                _graphics.ApplyChanges();
 
-            UiScaler.Configure(
-                screenSize.X,
-                screenSize.Y,
-                Math.Max(1, graphics.UiVirtualWidth),
-                Math.Max(1, graphics.UiVirtualHeight),
-                ScaleMode.Stretch);
+                UiScaler.Configure(
+                    screenSize.X,
+                    screenSize.Y,
+                    Math.Max(1, graphics.UiVirtualWidth),
+                    Math.Max(1, graphics.UiVirtualHeight),
+                    ScaleMode.Stretch);
 
-            Camera.Instance.AspectRatio = (float)screenSize.X / screenSize.Y;
+                Camera.Instance.AspectRatio = (float)screenSize.X / screenSize.Y;
 
-            _logger?.LogDebug("Android graphics configured: {Width}x{Height}, UiScaler: {ScaleX:F4}x{ScaleY:F4}",
-                screenSize.X, screenSize.Y,
-                UiScaler.ScaleX, UiScaler.ScaleY);
-#elif IOS
-            // On iOS, use actual screen size, not config values
-            var screenSize = GetActualScreenSize();
-            _graphics.PreferredBackBufferWidth = screenSize.X;
-            _graphics.PreferredBackBufferHeight = screenSize.Y;
-            _graphics.ApplyChanges();
+                _logger?.LogDebug("Android graphics configured: {Width}x{Height}, UiScaler: {ScaleX:F4}x{ScaleY:F4}",
+                    screenSize.X, screenSize.Y,
+                    UiScaler.ScaleX, UiScaler.ScaleY);
+            }
+            else if (OperatingSystem.IsIOS())
+            {
+                // On iOS, use actual screen size, not config values
+                var screenSize = GetActualScreenSize();
+                _graphics.PreferredBackBufferWidth = screenSize.X;
+                _graphics.PreferredBackBufferHeight = screenSize.Y;
+                _graphics.ApplyChanges();
 
-            UiScaler.Configure(
-                screenSize.X,
-                screenSize.Y,
-                Math.Max(1, graphics.UiVirtualWidth),
-                Math.Max(1, graphics.UiVirtualHeight),
-                ScaleMode.Stretch);
+                UiScaler.Configure(
+                    screenSize.X,
+                    screenSize.Y,
+                    Math.Max(1, graphics.UiVirtualWidth),
+                    Math.Max(1, graphics.UiVirtualHeight),
+                    ScaleMode.Stretch);
 
-            Camera.Instance.AspectRatio = (float)screenSize.X / screenSize.Y;
+                Camera.Instance.AspectRatio = (float)screenSize.X / screenSize.Y;
 
-            _logger?.LogDebug("iOS graphics configured: {Width}x{Height}, UiScaler: {ScaleX:F4}x{ScaleY:F4}",
-                screenSize.X, screenSize.Y,
-                UiScaler.ScaleX, UiScaler.ScaleY);
-#else
-            _graphics.PreferredBackBufferWidth = Math.Max(1, graphics.Width);
-            _graphics.PreferredBackBufferHeight = Math.Max(1, graphics.Height);
-            _graphics.IsFullScreen = graphics.IsFullScreen;
+                _logger?.LogDebug("iOS graphics configured: {Width}x{Height}, UiScaler: {ScaleX:F4}x{ScaleY:F4}",
+                    screenSize.X, screenSize.Y,
+                    UiScaler.ScaleX, UiScaler.ScaleY);
+            }
+            else
+            {
+                _graphics.PreferredBackBufferWidth = Math.Max(1, graphics.Width);
+                _graphics.PreferredBackBufferHeight = Math.Max(1, graphics.Height);
+                _graphics.IsFullScreen = graphics.IsFullScreen;
 
-            // In fullscreen mode, we need HardwareModeSwitch = true to actually change resolution.
-            // In windowed/borderless mode, keep it false to avoid exclusive fullscreen.
-            _graphics.HardwareModeSwitch = graphics.IsFullScreen;
+                // In fullscreen mode, we need HardwareModeSwitch = true to actually change resolution.
+                // In windowed/borderless mode, keep it false to avoid exclusive fullscreen.
+                _graphics.HardwareModeSwitch = graphics.IsFullScreen;
 
-            _graphics.ApplyChanges();
+                _graphics.ApplyChanges();
 
-            // Get actual window/backbuffer size after ApplyChanges (may differ from preferred)
-            int actualWidth = GraphicsDevice.PresentationParameters.BackBufferWidth;
-            int actualHeight = GraphicsDevice.PresentationParameters.BackBufferHeight;
+                // Get actual window/backbuffer size after ApplyChanges (may differ from preferred)
+                int actualWidth = GraphicsDevice.PresentationParameters.BackBufferWidth;
+                int actualHeight = GraphicsDevice.PresentationParameters.BackBufferHeight;
 
-            // Update viewport to match actual back buffer size (required for correct mouse ray casting)
-            GraphicsDevice.Viewport = new Viewport(0, 0, actualWidth, actualHeight);
+                // Update viewport to match actual back buffer size (required for correct mouse ray casting)
+                GraphicsDevice.Viewport = new Viewport(0, 0, actualWidth, actualHeight);
 
-            UiScaler.Configure(
-                actualWidth,
-                actualHeight,
-                Math.Max(1, graphics.UiVirtualWidth),
-                Math.Max(1, graphics.UiVirtualHeight),
-                ScaleMode.Uniform);
+                UiScaler.Configure(
+                    actualWidth,
+                    actualHeight,
+                    Math.Max(1, graphics.UiVirtualWidth),
+                    Math.Max(1, graphics.UiVirtualHeight),
+                    ScaleMode.Uniform);
 
-            // Update camera aspect ratio after resolution change
-            Camera.Instance.AspectRatio = (float)actualWidth / actualHeight;
-#endif
+                // Update camera aspect ratio after resolution change
+                Camera.Instance.AspectRatio = (float)actualWidth / actualHeight;
+            }
 
             _scaleFactor = UiScaler.Scale;
         }

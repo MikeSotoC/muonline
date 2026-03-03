@@ -10,9 +10,125 @@ namespace Client.Main.Objects
 {
     public abstract partial class ModelObject
     {
-        private void PrepareDynamicLightingEffect(Effect effect)
+        private static Vector3[] _effectLightUploadPositions = Array.Empty<Vector3>();
+        private static Vector3[] _effectLightUploadColors = Array.Empty<Vector3>();
+        private static float[] _effectLightUploadRadii = Array.Empty<float>();
+        private static float[] _effectLightUploadIntensities = Array.Empty<float>();
+
+        private static EffectTechnique TryGetTechnique(Effect effect, string name)
         {
-            effect.CurrentTechnique = effect.Techniques["DynamicLighting"];
+            if (effect == null || string.IsNullOrEmpty(name))
+                return null;
+
+            var techniques = effect.Techniques;
+            int count = techniques.Count;
+            for (int i = 0; i < count; i++)
+            {
+                var technique = techniques[i];
+                if (string.Equals(technique.Name, name, StringComparison.Ordinal))
+                    return technique;
+            }
+
+            return null;
+        }
+
+        private static int ResolveDynamicLightParameterCapacity(Effect effect, int fallbackCapacity)
+        {
+            if (effect == null)
+                return fallbackCapacity;
+
+            int positions = GetEffectParameterArrayCapacity(effect.Parameters["LightPositions"], fallbackCapacity);
+            int colors = GetEffectParameterArrayCapacity(effect.Parameters["LightColors"], fallbackCapacity);
+            int radii = GetEffectParameterArrayCapacity(effect.Parameters["LightRadii"], fallbackCapacity);
+            int intensities = GetEffectParameterArrayCapacity(effect.Parameters["LightIntensities"], fallbackCapacity);
+
+            int capacity = Math.Min(Math.Min(positions, colors), Math.Min(radii, intensities));
+            capacity = Math.Min(capacity, fallbackCapacity);
+            return Math.Max(capacity, 1);
+        }
+
+        private static int GetEffectParameterArrayCapacity(EffectParameter parameter, int fallbackCapacity)
+        {
+            if (parameter?.Elements == null || parameter.Elements.Count <= 0)
+                return fallbackCapacity;
+
+            return parameter.Elements.Count;
+        }
+
+        private static void EnsureEffectLightUploadBuffers(int requiredCapacity)
+        {
+            if (_effectLightUploadPositions.Length != requiredCapacity)
+            {
+                _effectLightUploadPositions = new Vector3[requiredCapacity];
+                _effectLightUploadColors = new Vector3[requiredCapacity];
+                _effectLightUploadRadii = new float[requiredCapacity];
+                _effectLightUploadIntensities = new float[requiredCapacity];
+            }
+        }
+
+        private static void UploadDynamicLightArrays(Effect effect, int uploadCapacity)
+        {
+            if (uploadCapacity <= 0 || effect == null)
+                return;
+
+            if (uploadCapacity == _cachedLightPositions.Length)
+            {
+                effect.Parameters["LightPositions"]?.SetValue(_cachedLightPositions);
+                effect.Parameters["LightColors"]?.SetValue(_cachedLightColors);
+                effect.Parameters["LightRadii"]?.SetValue(_cachedLightRadii);
+                effect.Parameters["LightIntensities"]?.SetValue(_cachedLightIntensities);
+                return;
+            }
+
+            EnsureEffectLightUploadBuffers(uploadCapacity);
+            Array.Copy(_cachedLightPositions, _effectLightUploadPositions, uploadCapacity);
+            Array.Copy(_cachedLightColors, _effectLightUploadColors, uploadCapacity);
+            Array.Copy(_cachedLightRadii, _effectLightUploadRadii, uploadCapacity);
+            Array.Copy(_cachedLightIntensities, _effectLightUploadIntensities, uploadCapacity);
+
+            effect.Parameters["LightPositions"]?.SetValue(_effectLightUploadPositions);
+            effect.Parameters["LightColors"]?.SetValue(_effectLightUploadColors);
+            effect.Parameters["LightRadii"]?.SetValue(_effectLightUploadRadii);
+            effect.Parameters["LightIntensities"]?.SetValue(_effectLightUploadIntensities);
+        }
+
+        private bool TryUploadGpuSkinBoneMatrices(Effect effect, int requiredBoneCount)
+        {
+            if (effect == null || requiredBoneCount <= 0 || requiredBoneCount > MaxGpuSkinBones)
+                return false;
+
+            Matrix[] bones = GetCachedBoneTransforms();
+            bones = GetRenderBoneTransforms(bones) ?? bones;
+            if (bones == null || bones.Length == 0)
+                return false;
+
+            int copyCount = Math.Min(requiredBoneCount, Math.Min(bones.Length, MaxGpuSkinBones));
+            if (copyCount <= 0)
+                return false;
+
+            if (_gpuSkinBoneUploadBuffer == null || _gpuSkinBoneUploadBuffer.Length != copyCount)
+            {
+                _gpuSkinBoneUploadBuffer = new Matrix[copyCount];
+            }
+
+            Array.Copy(bones, 0, _gpuSkinBoneUploadBuffer, 0, copyCount);
+            effect.Parameters["BoneMatrices"]?.SetValue(_gpuSkinBoneUploadBuffer);
+            return true;
+        }
+
+        private void PrepareDynamicLightingEffect(Effect effect, bool useGpuSkinning = false, int requiredBoneCount = 0)
+        {
+            if (effect == null)
+                return;
+
+            var dynamicLightingTechnique = TryGetTechnique(effect, "DynamicLighting");
+            if (dynamicLightingTechnique == null)
+                return;
+
+            var skinnedTechnique = useGpuSkinning ? TryGetTechnique(effect, "DynamicLighting_Skinned") : null;
+            bool usingSkinnedTechnique = skinnedTechnique != null &&
+                                         TryUploadGpuSkinBoneMatrices(effect, requiredBoneCount);
+            effect.CurrentTechnique = usingSkinnedTechnique ? skinnedTechnique : dynamicLightingTechnique;
             GraphicsManager.Instance.ShadowMapRenderer?.ApplyShadowParameters(effect);
 
             var camera = Camera.Instance;
@@ -40,7 +156,7 @@ namespace Client.Main.Objects
 
             effect.Parameters["Alpha"]?.SetValue(TotalAlpha);
             // Use objects technique instead of setting uniforms (better performance, no shader branches)
-            effect.CurrentTechnique = effect.Techniques["DynamicLighting"];
+            effect.CurrentTechnique = usingSkinnedTechnique ? skinnedTechnique : dynamicLightingTechnique;
             effect.Parameters["TerrainDynamicIntensityScale"]?.SetValue(1.5f);
             effect.Parameters["AmbientLight"]?.SetValue(_ambientLightVector * SunCycleManager.AmbientMultiplier);
             effect.Parameters["DebugLightingAreas"]?.SetValue(Constants.DEBUG_LIGHTING_AREAS ? 1.0f : 0.0f);
@@ -61,7 +177,15 @@ namespace Client.Main.Objects
                 return;
             }
 
-            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 4 : 16;
+            int uploadCapacity = ResolveDynamicLightParameterCapacity(effect, _cachedLightPositions.Length);
+            if (uploadCapacity <= 0)
+            {
+                effect.Parameters["ActiveLightCount"]?.SetValue(0);
+                effect.Parameters["MaxLightsToProcess"]?.SetValue(0);
+                return;
+            }
+
+            int maxLights = Math.Min(ResolveDynamicObjectLightBudget(worldTranslation), uploadCapacity);
             int lightCount = 0;
             var terrain = World?.Terrain;
             if (terrain != null)
@@ -75,7 +199,13 @@ namespace Client.Main.Objects
                     if (activeLights != null && activeLights.Count > 0)
                     {
                         EnsureDynamicLightSelectionBuffer();
-                        _dynamicLightSelectionCount = SelectRelevantLightIndices(activeLights, worldTranslation, maxLights, _dynamicLightSelectionIndices);
+
+                        // Always select by influence so nearby/high-impact lights are prioritized.
+                        _dynamicLightSelectionCount = SelectRelevantLightIndices(
+                            activeLights,
+                            worldTranslation,
+                            maxLights,
+                            _dynamicLightSelectionIndices);
                     }
 
                     _dynamicLightSelectionVersion = version;
@@ -88,15 +218,43 @@ namespace Client.Main.Objects
                 }
             }
 
+            lightCount = Math.Min(lightCount, maxLights);
             effect.Parameters["ActiveLightCount"]?.SetValue(lightCount);
             effect.Parameters["MaxLightsToProcess"]?.SetValue(maxLights);
             if (lightCount > 0)
             {
-                effect.Parameters["LightPositions"]?.SetValue(_cachedLightPositions);
-                effect.Parameters["LightColors"]?.SetValue(_cachedLightColors);
-                effect.Parameters["LightRadii"]?.SetValue(_cachedLightRadii);
-                effect.Parameters["LightIntensities"]?.SetValue(_cachedLightIntensities);
+                UploadDynamicLightArrays(effect, uploadCapacity);
             }
+        }
+
+        private int ResolveDynamicObjectLightBudget(Vector3 worldTranslation)
+        {
+            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 4 : 12;
+
+            if (LowQuality)
+                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 6);
+
+            var camera = Camera.Instance;
+            if (camera == null)
+                return Math.Max(1, maxLights);
+
+            var camPos = camera.Position;
+            float dx = camPos.X - worldTranslation.X;
+            float dy = camPos.Y - worldTranslation.Y;
+            float distSq = dx * dx + dy * dy;
+
+            const float nearSq = 1500f * 1500f;
+            const float midSq = 3200f * 3200f;
+            const float farSq = 5200f * 5200f;
+
+            if (distSq > farSq)
+                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 1 : 3);
+            else if (distSq > midSq)
+                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 4);
+            else if (distSq > nearSq)
+                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 3 : 6);
+
+            return Math.Max(1, maxLights);
         }
 
         private void EnsureDynamicLightSelectionBuffer()

@@ -9,6 +9,7 @@
     <SkipXcodeVersionCheck>true</SkipXcodeVersionCheck>
     <EnableCodeSigning>false</EnableCodeSigning>
     <ClientMainTargetFramework>net10.0-ios</ClientMainTargetFramework>
+    <UseSourceGenerators>true</UseSourceGenerators>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,13 +17,23 @@
     <PackageReference Include="MonoGame.Framework.iOS" Version="3.8.4.1" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);IOS</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\Client.Main\Client.Main.Ios.csproj" />
+    <MonoGameContentReference Include="..\Client.Main\MGContent\Content.mgcb">
+      <Link>Content\Content.mgcb</Link>
+    </MonoGameContentReference>
   </ItemGroup>
-  
-  <Target Name="RestoreDotnetTools" BeforeTargets="Restore">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Client.Main\Client.Main.csproj" />
+  </ItemGroup>
+
+  <Target Name="RestoreDotnetTools" BeforeTargets="CollectPackageReferences">
     <Message Text="Restoring dotnet tools" Importance="High" />
     <Exec Command="dotnet tool restore" />
   </Target>
-  
+
 </Project>

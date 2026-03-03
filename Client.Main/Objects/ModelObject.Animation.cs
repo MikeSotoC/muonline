@@ -3,6 +3,7 @@ using Client.Main.Content;
 using Client.Main.Controls.UI.Game.Inventory;
 using Client.Main.Models;
 using Client.Main.Objects.Player;
+using Client.Main.Objects.Wings;
 using Microsoft.Xna.Framework;
 using System;
 using System.Buffers;
@@ -40,7 +41,7 @@ namespace Client.Main.Objects
             var action = Model.Actions[currentActionIndex];
             if (action == null) return; // Skip animation if action is null
 
-            int totalFrames = Math.Max(action.NumAnimationKeys, 1);
+            int totalFrames = Math.Max(action.LockPositions ? action.NumAnimationKeys - 1 : action.NumAnimationKeys, 1);
             float delta = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
             // Detect death action for walkers to clamp on second-to-last key
@@ -65,19 +66,19 @@ namespace Client.Main.Objects
 
             if (totalFrames == 1 && !ContinuousAnimation)
             {
-                if (_priorAction != currentActionIndex)
+                if (_priorActionIndex != currentActionIndex)
                 {
                     GenerateBoneMatrix(currentActionIndex, 0, 0, 0);
-                    _priorAction = currentActionIndex;
+                    _priorActionIndex = currentActionIndex;
                     InvalidateBuffers(BUFFER_FLAG_ANIMATION);
                 }
                 CurrentFrame = 0;
                 return;
             }
 
-            if (_priorAction != currentActionIndex)
+            if (_priorActionIndex != currentActionIndex)
             {
-                _blendFromAction = _priorAction;
+                _blendFromAction = _priorActionIndex;
                 _blendFromTime = _animTime;
                 _blendElapsed = 0f;
                 _isBlending = true;
@@ -88,6 +89,7 @@ namespace Client.Main.Objects
 
             _animTime += delta * (action.PlaySpeed == 0 ? 1.0f : action.PlaySpeed) * AnimationSpeed;
             double framePos;
+
             if (isDeathAction || HoldOnLastFrame)
             {
                 int endIdx = Math.Max(0, totalFrames - 2);
@@ -112,22 +114,11 @@ namespace Client.Main.Objects
             {
                 framePos = _animTime % totalFrames;
             }
+
             int f0 = (int)framePos;
             int f1 = (f0 + 1) % totalFrames;
             float t = (float)(framePos - f0);
             CurrentFrame = f0;
-
-            // Only applies to objects that specifically request it (e.g., portals with stuttering)
-            if (PreventLastFrameInterpolation && totalFrames > 1 && f0 == totalFrames - 1)
-            {
-                // Instead of interpolating lastFrame->firstFrame, restart smoothly
-                // This eliminates the visual "jump" that causes animation stuttering
-                f0 = 0;
-                f1 = 1;
-                t = 0.0f;
-                framePos = 0.0;
-                _animTime = _animTime - (totalFrames - 1); // Adjust time to maintain continuity
-            }
 
             GenerateBoneMatrix(currentActionIndex, f0, f1, t);
 
@@ -163,7 +154,7 @@ namespace Client.Main.Objects
                 InvalidateBuffers(BUFFER_FLAG_ANIMATION);
             }
 
-            _priorAction = currentActionIndex;
+            _priorActionIndex = currentActionIndex;
         }
 
         protected void GenerateBoneMatrix(int actionIdx, int frame0, int frame1, float t)
@@ -226,9 +217,7 @@ namespace Client.Main.Objects
             // Rent temp array from pool for safer hierarchical calculations
             // ArrayPool may return larger array, so we use bones.Length for actual operations
             Matrix[] tempBoneTransforms = _matrixArrayPool.Rent(bones.Length);
-#if DEBUG
-            Interlocked.Increment(ref _poolRentCount);
-#endif
+
             try
             {
                 bool lockPositions = action.LockPositions;
@@ -357,7 +346,6 @@ namespace Client.Main.Objects
                             _lastAnimationUpdateTime = _lastFrameTimeMs;
                         }
                     }
-                    UpdateBoundings();
                 }
 
                 // Always update cache for objects that should use it
@@ -377,9 +365,6 @@ namespace Client.Main.Objects
                 // CRITICAL: Always return rented array to pool to prevent memory leaks
                 // clearArray: false because we don't need to zero out Matrix structs (performance)
                 _matrixArrayPool.Return(tempBoneTransforms, clearArray: false);
-#if DEBUG
-                Interlocked.Increment(ref _poolReturnCount);
-#endif
             }
         }
 

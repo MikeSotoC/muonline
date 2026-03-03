@@ -15,7 +15,7 @@ namespace Client.Main.Objects.Effects
     /// <summary>
     /// Floating damage / crit text above a target.
     /// </summary>
-    public class DamageTextObject : WorldObject
+    public class DamageTextObject : EffectObject
     {
         // Public readonly data -------------------------------------------------
         public string Text { get; private set; }
@@ -210,7 +210,7 @@ namespace Client.Main.Objects.Effects
 
             // ------------------------------------------------ target + projection
             WalkerObject target = ResolveTarget();
-            if (target == null || target.Hidden || target.Status == GameControlStatus.Disposed || target.OutOfView)
+            if (target == null || target.Hidden || target.Status == GameControlStatus.Disposed)
             {
                 Hidden = true;
                 return;

@@ -18,7 +18,7 @@ namespace Client.Main.Controllers
         public GraphicsDevice GraphicsDevice => _graphicsDevice;
 
         public bool IsFXAAEnabled { get; set; } = false;
-        public bool IsAlphaRGBEnabled { get; set; } = true;
+        public bool IsAlphaRGBEnabled { get; set; } = false;
 
         public SpriteBatch Sprite { get; private set; }
         public SpriteFont Font { get; private set; }
@@ -111,7 +111,7 @@ namespace Client.Main.Controllers
             };
 
             Sprite = new SpriteBatch(_graphicsDevice);
-            Font = _contentManager.Load<SpriteFont>("Arial");
+            Font = _contentManager.Load<SpriteFont>(Constants.FONT_NAME);
         }
 
         private void InitializeFXAAEffect()

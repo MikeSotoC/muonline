@@ -1,4 +1,5 @@
 using Client.Data.ATT;
+using Client.Data.MAP;
 using Client.Main.Controls.Terrain;
 using Client.Main.Graphics;
 using Microsoft.Xna.Framework;
@@ -34,14 +35,16 @@ namespace Client.Main.Controls
         public int ActiveLightsVersion => _lightManager.ActiveLightsVersion;
         public Texture2D HeightMapTexture => _data?.HeightMapTexture;
         private Dictionary<int, string> _pendingTextureMap = new();
+        private bool _replaceTextureMapping;
 
         public Dictionary<int, string> TextureMappingFiles
         {
             get => _data != null ? _data.TextureMappingFiles : _pendingTextureMap;
             set
             {
+                _replaceTextureMapping = true;
                 if (_data != null)
-                    _data.TextureMappingFiles = value;
+                    _data.TextureMappingFiles = value ?? new Dictionary<int, string>();
                 else
                     _pendingTextureMap = value ?? new Dictionary<int, string>();
             }
@@ -77,6 +80,8 @@ namespace Client.Main.Controls
                 }
             }
 
+            _grassRenderer.BuildAllGrass();
+
             Console.WriteLine($"[TerrainControl] ConfigureGrass for World{WorldIndex} - Brightness: {oldBrightness:F2} → {brightness:F2}, TextureIndices: [{string.Join(", ", textureIndices ?? new byte[] { 0 })}]");
         }
 
@@ -87,27 +92,7 @@ namespace Client.Main.Controls
         public void ReloadGrassIfNeeded()
         {
             _grassRenderer?.EnsureContentLoaded(WorldIndex);
-        }
-
-        /// <summary>
-        /// Exposes frame-specific rendering metrics for debugging or performance monitoring.
-        /// </summary>
-        public sealed class TerrainFrameMetrics
-        {
-            public int DrawCalls { get; internal set; }
-            public int DrawnTriangles { get; internal set; }
-            public int DrawnBlocks { get; internal set; }
-            public int DrawnCells { get; internal set; }
-            public int GrassFlushes { get; internal set; }
-
-            public void Reset()
-            {
-                DrawCalls = 0;
-                DrawnTriangles = 0;
-                DrawnBlocks = 0;
-                DrawnCells = 0;
-                GrassFlushes = 0;
-            }
+            _grassRenderer?.BuildAllGrass();
         }
         public TerrainFrameMetrics FrameMetrics { get; } = new TerrainFrameMetrics();
 
@@ -121,13 +106,14 @@ namespace Client.Main.Controls
         {
             _loader = new TerrainLoader(WorldIndex);
 
-            if (_pendingTextureMap.Count > 0)
+            if (_pendingTextureMap.Count > 0 || _replaceTextureMapping)
             {
-                _loader.SetTextureMapping(_pendingTextureMap);
+                _loader.SetTextureMapping(_pendingTextureMap, _replaceTextureMapping);
             }
 
             _data = await _loader.LoadAsync();
             _pendingTextureMap.Clear();
+            _replaceTextureMapping = false;
 
             if (_data == null)
             {
@@ -153,6 +139,7 @@ namespace Client.Main.Controls
 
             // Reset grass to defaults before loading world-specific content
             _grassRenderer.LoadContent(WorldIndex);
+            _grassRenderer.BuildAllGrass();
 
             Camera.Instance.AspectRatio = GraphicsDevice.Viewport.AspectRatio;
 
@@ -200,10 +187,12 @@ namespace Client.Main.Controls
             base.DrawAfter(gameTime);
         }
 
+
         // --- Public Query Methods (Facade) ---
-        public TWFlags RequestTerrainFlag(int x, int y) => _physics.RequestTerrainFlag(x, y);
-        public float RequestTerrainHeight(float xf, float yf) => _physics.RequestTerrainHeight(xf, yf);
-        public Vector3 EvaluateTerrainLight(float xf, float yf) => _physics.RequestTerrainLight(xf, yf, AmbientLight);
+        public int GetHeroTile(float xf, float yf) => _data.Mapping.Layer1[TerrainPhysics.GetTerrainIndex(xf, yf)];
+        public TWFlags RequestTerrainFlag(int x, int y) => _physics?.RequestTerrainFlag(x, y) ?? 0f;
+        public float RequestTerrainHeight(float xf, float yf) => _physics?.RequestTerrainHeight(xf, yf) ?? 0f;
+        public Vector3 EvaluateTerrainLight(float xf, float yf) => _physics?.RequestTerrainLight(xf, yf, AmbientLight) ?? Vector3.Zero;
         public Vector3 EvaluateDynamicLight(Vector2 position) => _lightManager.EvaluateDynamicLight(position);
         public byte GetBaseTextureIndexAt(int x, int y) => _physics.GetBaseTextureIndexAt(x, y);
         public float GetWindValue(int x, int y) => _wind.GetWindValue(x, y);
@@ -222,6 +211,7 @@ namespace Client.Main.Controls
 
         public override void Dispose()
         {
+            _grassRenderer?.Dispose();
             base.Dispose();
             _data = null; // Allow GC to collect all data
             GC.SuppressFinalize(this);

@@ -10,9 +10,6 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
-#if ANDROID
-using Client.Main.Platform.Android;
-#endif
 
 namespace Client.Main.Controls.UI
 {
@@ -24,7 +21,14 @@ namespace Client.Main.Controls.UI
 
     public class TextFieldControl : UIControl, IUiTexturePreloadable
     {
-        private readonly StringBuilder _inputText = new();
+        public static Type ControlType = typeof(TextFieldControl);
+
+        public static TextFieldControl Create()
+        {
+            return (TextFieldControl)Activator.CreateInstance(ControlType, true);
+        }
+
+        protected readonly StringBuilder _inputText = new();
         private double _cursorBlinkTimer;
         private bool _showCursor;
         private float _scrollOffset;
@@ -43,8 +47,9 @@ namespace Client.Main.Controls.UI
         public TextFieldSkin Skin { get; set; } = TextFieldSkin.Flat;
         public Color TextColor { get; set; } = Color.White;
         public float FontSize { get; set; } = 12f;
-        public TextFieldControl NextInput { get; set; }
         public bool IsFocused { get; private set; }
+        public string Label { get; set; }
+        public string Placeholder { get; set; }
 
         public string Value
         {
@@ -62,7 +67,7 @@ namespace Client.Main.Controls.UI
         public event EventHandler ValueChanged;
         public event EventHandler EnterKeyPressed;
 
-        public TextFieldControl()
+        protected TextFieldControl()
         {
             AutoViewSize = false;
             ViewSize = new Point(176, 14);
@@ -104,12 +109,6 @@ namespace Client.Main.Controls.UI
             if (Scene != null) Scene.FocusControl = this;
 
             _logger?.LogDebug("TextFieldControl: OnFocus called. Subscribing to TextInput.");
-
-#if ANDROID
-            // Subscribe to Android text input event (Critical for soft keyboard and scrcpy)
-            AndroidKeyboard.TextInput += OnTextInput;
-            AndroidKeyboard.Show();
-#endif
         }
 
         public override void OnBlur()
@@ -141,7 +140,7 @@ namespace Client.Main.Controls.UI
             }
         }
 
-        private void UpdateScrollOffset()
+        protected void UpdateScrollOffset()
         {
             if (GraphicsManager.Instance?.Font == null) return;
 
@@ -151,6 +150,16 @@ namespace Client.Main.Controls.UI
             float maxVisibleWidth = DisplayRectangle.Width - TextMargin * 2;
 
             _scrollOffset = textWidth > maxVisibleWidth ? textWidth - maxVisibleWidth : 0;
+        }
+
+        protected void OnEnterKeyPressed()
+        {
+            EnterKeyPressed?.Invoke(this, EventArgs.Empty);
+        }
+
+        protected void OnValueChanged()
+        {
+            ValueChanged?.Invoke(this, EventArgs.Empty);
         }
 
         /// <summary>

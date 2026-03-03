@@ -6,14 +6,16 @@ using Client.Main.Core.Utilities;
 using Client.Main.Graphics;
 using Client.Main.Helpers;
 using Client.Main.Models;
+using Client.Main.Objects.Player;
 using Client.Main.Scenes;
+using Microsoft.Extensions.Logging;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Diagnostics;
 using System.Text;
 using System.Threading.Tasks;
+using static LEA.Symmetric.Lea;
 
 namespace Client.Main.Objects
 {
@@ -27,8 +29,12 @@ namespace Client.Main.Objects
         private WorldControl _world;
         private bool _interactive;
         private bool _isTransformDirty = true;
+        private bool _hidden = false;
+        private GameControlStatus _status = GameControlStatus.NonInitialized;
 
         private ILogger _logger = ModelObject.AppLoggerFactory?.CreateLogger<WorldObject>();
+
+        public event EventHandler PositionChanged;
 
         public virtual float Depth
         {
@@ -41,16 +47,6 @@ namespace Client.Main.Objects
 
         private SpriteFont _font;
         private Texture2D _whiteTexture;
-        private float _cullingCheckTimer = 0;
-        private const float CullingCheckInterval = 0.1f; // Check culling every 100ms instead of every frame
-
-        // Advanced update optimization for invisible objects
-        private float _lowPriorityUpdateTimer = 0;
-        private const float LowPriorityUpdateInterval = 0.25f; // Update invisible objects every 250ms
-        private const float FarObjectUpdateInterval = 0.5f; // Update very far objects every 500ms
-        private float _lastDistanceToCamera = float.MaxValue;
-        private bool _wasOutOfView = true;
-        private const int MaxSkipFrames = 15; // Skip up to 15 frames for very distant objects
 
         // PERFORMANCE: Static bbox indices to avoid per-frame allocation
         private static readonly int[] BoundingBoxIndices = new int[]
@@ -88,37 +84,40 @@ namespace Client.Main.Objects
         }
 
         public bool LinkParentAnimation { get; set; }
-        public bool OutOfView { get; private set; } = true;
         public ChildrenCollection<WorldObject> Children { get; private set; }
-        public WorldObject Parent { get => _parent; set { var prev = _parent; _parent = value; OnParentChanged(value, prev); } }
+        public WorldObject Parent { get => _parent; set { if (_parent != value) { var prev = _parent; _parent = value; OnParentChanged(value, prev); } } }
 
-        public BoundingBox BoundingBoxLocal { get => _boundingBoxLocal; set { _boundingBoxLocal = value; OnBoundingBoxLocalChanged(); } }
+        public BoundingBox BoundingBoxLocal { get => _boundingBoxLocal; set { if (_boundingBoxLocal != value) { _boundingBoxLocal = value; OnBoundingBoxLocalChanged(); } } }
         public BoundingBox BoundingBoxWorld { get; protected set; }
 
-        public GameControlStatus Status { get; protected set; } = GameControlStatus.NonInitialized;
-        public bool Hidden { get; set; }
+        public event EventHandler StatusChanged;
+        public GameControlStatus Status { get => _status; protected set { if (_status != value) { _status = value; OnStatusChanged(); } } }
+        public event EventHandler HiddenChanged;
+        public bool Hidden { get => _hidden; set { if (_hidden != value) { _hidden = value; OnHiddenChanged(); } } }
         public string ObjectName => GetType().Name;
         public virtual string DisplayName => ObjectName;
         public BlendState BlendState { get; set; } = BlendState.Opaque;
         public float Alpha { get; set; } = 1f;
         public float TotalAlpha { get => (Parent?.TotalAlpha ?? 1f) * Alpha; }
-        public Vector3 Position { get => _position; set { if (_position != value) { _position = value; OnPositionChanged(); } } }
-        public Vector3 Angle { get => _angle; set { if (_angle != value) { _angle = value; OnAngleChanged(); } } }
+        public Vector3 Position { get => _position; set { if (_position != value) { if (_position != value) { _position = value; OnPositionChanged(); } } } }
+        public Vector3 Angle { get => _angle; set { if (_angle != value) { if (_angle != value) { _angle = value; OnAngleChanged(); } } } }
         public Vector3 TotalAngle { get => (Parent?.TotalAngle ?? Vector3.Zero) + Angle; }
 
-        public float Scale { get => _scale; set { if (_scale != value) { _scale = value; OnScaleChanged(); } } }
+        public float Scale { get => _scale; set { if (_scale != value) { if (_scale != value) { _scale = value; OnScaleChanged(); } } } }
         public float TotalScale { get => (Parent?.Scale ?? 1f) * Scale; }
-        public Matrix WorldPosition { get => _worldPosition; set { _worldPosition = value; OnWorldPositionChanged(); } }
-        public bool Interactive { get => _interactive || (Parent?.Interactive ?? false); set { _interactive = value; } }
+        public Matrix WorldPosition { get => _worldPosition; set { if (_worldPosition != value) { _worldPosition = value; OnWorldPositionChanged(); } } }
+        public bool Interactive { get => _interactive; set { _interactive = value; } }
         public Vector3 Light { get; set; } = new Vector3(0f, 0f, 0f);
         public bool LightEnabled { get; set; } = true;
         /// <summary>
         /// Indicates that the object is far from the camera and should be rendered in lower quality.
         /// </summary>
         public bool LowQuality { get; private set; }
-        public bool Visible => Status == GameControlStatus.Ready && !OutOfView && !Hidden;
-        public WorldControl World { get => _world; set { _world = value; OnChangeWorld(); } }
+        internal int UpdateOffset => _updateOffset;
+        public bool Visible => Status == GameControlStatus.Ready && !Hidden;
+        public WorldControl World { get => _world; set { if (_world != value) { var prev = _world; _world = value; OnWorldChanged(value, prev); } } }
         public short Type { get; set; }
+        public bool IsMapPlacementObject { get; set; }
         public Color BoundingBoxColor { get; set; } = Color.GreenYellow;
         protected GraphicsDevice GraphicsDevice => MuGame.Instance.GraphicsDevice;
 
@@ -139,6 +138,17 @@ namespace Client.Main.Objects
             _updateOffset = GetHashCode() % 60; // Spread across ~1 second at 60fps
         }
 
+        private void OnStatusChanged()
+        {
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+            World?.OnWorldObjectStatusChanged(this);
+        }
+
+        private void OnHiddenChanged()
+        {
+           HiddenChanged?.Invoke(this, EventArgs.Empty);
+        }
+
         public virtual void OnClick()
         {
             Click?.Invoke(this, EventArgs.Empty);
@@ -149,14 +159,17 @@ namespace Client.Main.Objects
             e.Control.World = World;
         }
 
-        private void OnChangeWorld()
+        protected virtual void OnWorldChanged(WorldControl newWorld, WorldControl prevWorld)
         {
             var children = Children.ToArray();
             for (var i = 0; i < children.Length; i++)
-                Children[i].World = World;
+                Children[i].World = newWorld;
 
-            if (World is WalkableWorldControl && this is WalkerObject walker)
+            if (newWorld is WalkableWorldControl && this is WalkerObject walker)
                 walker.OnDirectionChanged();
+
+            OnPositionChanged();
+            OnStatusChanged();
         }
 
         public virtual async Task Load()
@@ -174,10 +187,15 @@ namespace Client.Main.Objects
 
                 tasks[0] = LoadContent();
 
-                for (var i = 0; i < Children.Count; i++)
-                    tasks[i + 1] = Children[i].Load();
+                var snapshot = Children.GetSnapshot();
 
-                await Task.WhenAll(tasks);
+                for (var i = 0; i < snapshot.Count; i++)
+                    tasks[i + 1] = snapshot[i].Load();
+
+                await Task.WhenAny(
+                    Task.WhenAll(tasks),
+                    Task.Delay(5000)
+                );
 
                 RecalculateWorldPosition();
                 UpdateWorldBoundingBox();
@@ -200,203 +218,79 @@ namespace Client.Main.Objects
         {
             if (Status == GameControlStatus.NonInitialized)
             {
-                Load().ConfigureAwait(false);
+                // World objects are initialized by WorldControl's budgeted queue.
+                // Keep the legacy fallback for detached/child objects.
+                if (World == null || Parent != null)
+                    Load().ConfigureAwait(false);
+
+                return;
             }
             if (Status != GameControlStatus.Ready) return;
 
             // Increment once per *frame time*, not per object update
             _globalFrameCounter = (int)(gameTime.TotalGameTime.TotalSeconds * 60.0);
 
-            float deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
-
-            // Update OutOfView flag with intelligent frequency based on object state
-            bool shouldCheckCulling = false;
-            if (World != null)
+            if (Constants.SHOW_DEBUG_PANEL)
             {
-                _cullingCheckTimer += deltaTime;
+                TotalUpdatesPerformed++;
 
-                // Adjust culling check frequency based on object state
-                float checkInterval = _wasOutOfView ? CullingCheckInterval * 2f : CullingCheckInterval;
-                if (_cullingCheckTimer >= checkInterval)
+                if (Environment.TickCount - _lastResetTime > 5000)
                 {
-                    shouldCheckCulling = true;
+                    _lastResetTime = Environment.TickCount;
+                    TotalSkippedUpdates = 0;
+                    TotalUpdatesPerformed = 0;
                 }
             }
 
-            if (shouldCheckCulling)
+            var scene = World?.Scene;
+            if ((Interactive || Constants.DRAW_BOUNDING_BOXES) && scene != null)
             {
-                _cullingCheckTimer = 0;
-                _wasOutOfView = OutOfView;
-                OutOfView = World != null && !World.IsObjectInView(this);
+                bool uiBlockingHover = scene.MouseHoverControl is not null && scene.MouseHoverControl != scene.World;
+                bool objectBlockingHover = scene.MouseHoverObject is not null;
 
-                // If object was just marked as out of view, give it another chance soon
-                if (!_wasOutOfView && OutOfView)
+                if (!uiBlockingHover && !objectBlockingHover)
                 {
-                    _cullingCheckTimer = CullingCheckInterval - 0.016f; // Check again in ~1 frame
-                }
-            }
+                    bool parentIsMouseHover = Parent?.IsMouseHover ?? false;
 
-            // AGGRESSIVE: Skip most updates for invisible objects
-            if (OutOfView)
-            {
-                _lowPriorityUpdateTimer += deltaTime;
-
-                // Much more aggressive - update invisible objects only every 1 second!
-                if (_lowPriorityUpdateTimer < 1.0f && _globalFrameCounter % 60 != (_updateOffset % 60))
-                {
-                    TotalSkippedUpdates++;
-                    return; // Skip this frame entirely for invisible objects - VERY aggressive
-                }
-
-                _lowPriorityUpdateTimer = 0;
-
-                // Only update critical children for invisible objects
-                for (int i = 0; i < Children.Count; i++)
-                {
-                    var child = Children[i];
-                    // Only update if it's a player or monster - skip everything else
-                    if (child is Player.PlayerObject || child is MonsterObject)
+                    bool wouldBeMouseHover = parentIsMouseHover;
+                    if (!parentIsMouseHover)
                     {
-                        child.Update(gameTime);
+                        bool isImportantHoverCheck = this is WalkerObject;
+                        if (TryBeginHoverCheck(isImportantHoverCheck))
+                        {
+                            float? intersectionDistance = MuGame.Instance.MouseRay.Intersects(BoundingBoxWorld);
+                            ContainmentType contains = BoundingBoxWorld.Contains(MuGame.Instance.MouseRay.Position);
+                            wouldBeMouseHover = intersectionDistance.HasValue || contains == ContainmentType.Contains;
+                        }
+                        else
+                        {
+                            if (Constants.SHOW_DEBUG_PANEL)
+                                TotalSkippedUpdates++;
+
+                            wouldBeMouseHover = false;
+                        }
                     }
-                }
-                return;
-            }
 
-            // Reset low priority timer when object becomes visible
-            _lowPriorityUpdateTimer = 0;
+                    IsMouseHover = wouldBeMouseHover;
 
-            // Simplified distance-based optimization for visible objects
-            float distanceToCamera = float.MaxValue;
-            if (World != null && Camera.Instance != null)
-            {
-                distanceToCamera = Vector3.Distance(Camera.Instance.Position, WorldPosition.Translation);
-                _lastDistanceToCamera = distanceToCamera;
-
-                // AGGRESSIVE: Skip every other frame for very distant visible objects
-                if (distanceToCamera > Constants.LOW_QUALITY_DISTANCE * 2f)
-                {
-                    if (_globalFrameCounter % 2 != (_updateOffset % 2))
-                    {
-                        TotalSkippedUpdates++;
-                        return; // Skip every other frame for distant objects
-                    }
-                }
-            }
-
-            // Full update for all visible objects (simplified)
-            PerformFullUpdate(gameTime, distanceToCamera);
-        }
-
-        private void UpdateChildrenSelectively(GameTime gameTime)
-        {
-            // Only update children that are likely to be important (players, animated objects, etc.)
-            for (int i = 0; i < Children.Count; i++)
-            {
-                var child = Children[i];
-
-                // Always update players and important objects
-                if (child is Player.PlayerObject ||
-                    child is MonsterObject ||
-                    child.Interactive ||
-                    !child.OutOfView)
-                {
-                    child.Update(gameTime);
-                }
-                // For other children, use staggered updates
-                else if (((_globalFrameCounter + child._updateOffset) % (MaxSkipFrames * 2)) == 0)
-                {
-                    child.Update(gameTime);
-                }
-            }
-        }
-
-        private void PerformFullUpdate(GameTime gameTime, float distanceToCamera)
-        {
-            TotalUpdatesPerformed++;
-
-            // Reset debug counters every 5 seconds
-            if (Environment.TickCount - _lastResetTime > 5000)
-            {
-                _lastResetTime = Environment.TickCount;
-                // log these values or display them in debug UI
-                //Console.WriteLine($"WorldObject Optimization: {TotalSkippedUpdates} skipped, {TotalUpdatesPerformed} performed");
-                TotalSkippedUpdates = 0;
-                TotalUpdatesPerformed = 0;
-            }
-            // Determine whether the object should be rendered in low quality based on distance to the camera
-            if (World != null)
-            {
-                bool isLoginScene = World.Scene is LoginScene;
-                if (!Constants.ENABLE_LOW_QUALITY_SWITCH ||
-                    (isLoginScene && !Constants.ENABLE_LOW_QUALITY_IN_LOGIN_SCENE))
-                {
-                    LowQuality = false;
+                    if (!parentIsMouseHover && IsMouseHover && scene.MouseHoverObject is null)
+                        scene.MouseHoverObject = this;
                 }
                 else
                 {
-                    LowQuality = distanceToCamera > Constants.LOW_QUALITY_DISTANCE;
-                }
-            }
-            else
-            {
-                LowQuality = false;
-            }
-
-            // Mouse hover detection optimization - skip for distant/out-of-view objects
-            bool withinHoverRange = distanceToCamera < Constants.LOW_QUALITY_DISTANCE * 1.5f;
-            // Cache frustum result only when within hover range
-            bool inFrustum = withinHoverRange && (Camera.Instance?.Frustum.Contains(BoundingBoxWorld) != ContainmentType.Disjoint);
-            // Defer expensive hover checks when many objects spawn: use a staggered cadence for non-interactive objects
-            bool hoverBudgetThisFrame = (_globalFrameCounter + _updateOffset) % 3 == 0; // 1/3 frames
-            bool shouldCheckMouseHover = inFrustum && (Interactive || Constants.DRAW_BOUNDING_BOXES || hoverBudgetThisFrame);
-
-            if (shouldCheckMouseHover)
-            {
-                if (!TryBeginHoverCheck(Interactive || Constants.DRAW_BOUNDING_BOXES))
-                {
                     IsMouseHover = false;
-                    goto ChildrenUpdate;
                 }
-
-                // Determine if UI should block hover detection for world objects
-                bool uiBlockingHover = false;
-                if (World?.Scene != null)
-                {
-                    var scene = World.Scene;
-                    if (scene.MouseHoverControl != null && scene.MouseHoverControl != scene.World)
-                    {
-                        uiBlockingHover = true; // a UI element is hovered, ignore world hover
-                    }
-                }
-
-                // Cache parent's mouse hover state
-                bool parentIsMouseHover = Parent?.IsMouseHover ?? false;
-
-                // Only calculate intersections if needed and not blocked by UI
-                bool wouldBeMouseHover = parentIsMouseHover;
-                if (!parentIsMouseHover && !uiBlockingHover && (Interactive || Constants.DRAW_BOUNDING_BOXES))
-                {
-                    float? intersectionDistance = MuGame.Instance.MouseRay.Intersects(BoundingBoxWorld);
-                    ContainmentType contains = BoundingBoxWorld.Contains(MuGame.Instance.MouseRay.Position);
-                    wouldBeMouseHover = intersectionDistance.HasValue || contains == ContainmentType.Contains;
-                }
-
-                IsMouseHover = !uiBlockingHover && wouldBeMouseHover;
-
-                if (!parentIsMouseHover && IsMouseHover)
-                    World.Scene.MouseHoverObject = this;
             }
             else
             {
-                IsMouseHover = false; // Distant objects can't be hovered
+                IsMouseHover = false;
             }
 
-            // Update all children for visible objects
-        ChildrenUpdate:
-            for (int i = 0; i < Children.Count; i++)
-                Children[i].Update(gameTime);
+            var objects = Children;
+            for (int i = objects.Count - 1; i >= 0; i--)
+                objects[i].Update(gameTime);
         }
+
 
         public virtual void Draw(GameTime gameTime)
         {
@@ -404,10 +298,9 @@ namespace Client.Main.Objects
 
             DrawBoundingBox3D();
 
-            // Avoid enumeration overhead
-            int count = Children.Count;
-            for (int i = 0; i < count; i++)
-                Children[i].Draw(gameTime);
+            var objects = Children;
+            for (int i = 0; i < objects.Count; i++)
+                objects[i].Draw(gameTime);
         }
 
         public virtual void DrawAfter(GameTime gameTime)
@@ -417,10 +310,9 @@ namespace Client.Main.Objects
             DrawBoundingBox2D();
             DrawHoverName();
 
-            // Avoid enumeration overhead
-            int count = Children.Count;
-            for (int i = 0; i < count; i++)
-                Children[i].DrawAfter(gameTime);
+            var objects = Children;
+            for (int i = 0; i < objects.Count; i++)
+                objects[i].DrawAfter(gameTime);
         }
 
         /// <summary>
@@ -514,6 +406,15 @@ namespace Client.Main.Objects
 
         public virtual void Dispose()
         {
+            if (Status == GameControlStatus.Disposed)
+                return;
+
+            if (Status == GameControlStatus.Initializing)
+            {
+                Thread.Sleep(100);
+                Dispose();
+            }
+
             Status = GameControlStatus.Disposed;
 
             var children = Children.ToArray();
@@ -533,6 +434,7 @@ namespace Client.Main.Objects
         {
             MarkTransformDirty();
             RecalculateWorldPosition();
+            PositionChanged?.Invoke(this, EventArgs.Empty);
         }
 
         protected virtual void OnAngleChanged()
@@ -553,10 +455,15 @@ namespace Client.Main.Objects
                 prev.MatrixChanged -= OnParentMatrixChanged;
                 prev.Children.Remove(this);
             }
-            if (current != null) current.MatrixChanged += OnParentMatrixChanged;
+            if (current != null)
+            {
+                current.MatrixChanged += OnParentMatrixChanged;
+            }
             MarkTransformDirty();
             RecalculateWorldPosition();
         }
+
+
         protected virtual void OnBoundingBoxLocalChanged() => UpdateWorldBoundingBox();
 
         private void OnParentMatrixChanged(Object s, EventArgs e)
@@ -570,17 +477,6 @@ namespace Client.Main.Objects
             _isTransformDirty = true;
         }
 
-        /// <summary>
-        /// Forces the object to be treated as in-view for the next update cycle.
-        /// Useful for short-lived effects that shouldn't wait for culling checks.
-        /// </summary>
-        public void ForceInView()
-        {
-            OutOfView = false;
-            _wasOutOfView = false;
-            _cullingCheckTimer = 0f;
-            _lowPriorityUpdateTimer = 0f;
-        }
         protected virtual void RecalculateWorldPosition()
         {
             if (!_isTransformDirty)
@@ -757,13 +653,18 @@ namespace Client.Main.Objects
             return true;
         }
 
+        internal void SetLowQuality(bool value)
+        {
+            LowQuality = value;
+        }
+
         protected virtual void UpdateWorldBoundingBox()
         {
             Matrix worldPos = WorldPosition;
             var min = BoundingBoxLocal.Min;
             var max = BoundingBoxLocal.Max;
 
-            // Write corners directly into the reusable buffer (avoids GetCorners allocation)
+            // Write corners directly into the reusable buffer(avoids GetCorners allocation)
             _bboxCorners[0] = Vector3.Transform(new Vector3(min.X, min.Y, min.Z), worldPos);
             _bboxCorners[1] = Vector3.Transform(new Vector3(max.X, min.Y, min.Z), worldPos);
             _bboxCorners[2] = Vector3.Transform(new Vector3(max.X, max.Y, min.Z), worldPos);

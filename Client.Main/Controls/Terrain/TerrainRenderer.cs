@@ -42,6 +42,15 @@ namespace Client.Main.Controls.Terrain
         private readonly int[] _tileIndexCounts = new int[256];
         private readonly ushort[][] _tileAlphaIndexBatches = new ushort[256][];
         private readonly int[] _tileAlphaIndexCounts = new int[256];
+        private readonly bool[] _tileIndexActive = new bool[256];
+        private readonly bool[] _tileAlphaIndexActive = new bool[256];
+        private readonly List<int> _activeTileIndexTextures = new(32);
+        private readonly List<int> _activeTileAlphaIndexTextures = new(32);
+
+        private readonly bool[] _tileBatchActive = new bool[256];
+        private readonly bool[] _tileAlphaBatchActive = new bool[256];
+        private readonly List<int> _activeTileBatchTextures = new(32);
+        private readonly List<int> _activeTileAlphaBatchTextures = new(32);
 
         // Buffers for a single terrain tile quad
         private readonly TerrainVertexPositionColorNormalTexture[] _terrainVertices = new TerrainVertexPositionColorNormalTexture[6];
@@ -82,15 +91,20 @@ namespace Client.Main.Controls.Terrain
         private float _terrainBuffersAmbientLight = float.NaN;
         private byte[] _terrainBuffersAlphaMapRef;
 
-        private readonly Vector3[] _cachedLightPositions = new Vector3[16];
-        private readonly Vector3[] _cachedLightColors = new Vector3[16];
-        private readonly float[] _cachedLightRadii = new float[16];
-        private readonly float[] _cachedLightIntensities = new float[16];
-        private readonly float[] _cachedLightScores = new float[16];
+        private const int DynamicLightArrayCapacity = 32;
+        private readonly Vector3[] _cachedLightPositions = new Vector3[DynamicLightArrayCapacity];
+        private readonly Vector3[] _cachedLightColors = new Vector3[DynamicLightArrayCapacity];
+        private readonly float[] _cachedLightRadii = new float[DynamicLightArrayCapacity];
+        private readonly float[] _cachedLightIntensities = new float[DynamicLightArrayCapacity];
+        private readonly float[] _cachedLightScores = new float[DynamicLightArrayCapacity];
+        private Vector3[] _lightUploadPositions = Array.Empty<Vector3>();
+        private Vector3[] _lightUploadColors = Array.Empty<Vector3>();
+        private float[] _lightUploadRadii = Array.Empty<float>();
+        private float[] _lightUploadIntensities = Array.Empty<float>();
+        private int _lastLightsVersion = -1;
+        private int _lastLightSelectionMaxLights = -1;
+        private int _lastLightCount = 0;
         private const float MinLightInfluence = 0.001f;
-        private int _cachedSelectedLightsVersion = -1;
-        private int _cachedSelectedLightsMax = -1;
-        private int _cachedSelectedLightCount = 0;
 
         private Vector2 _waterFlowDir = Vector2.UnitX;
         private float _waterTotal = 0f;
@@ -360,7 +374,9 @@ namespace Client.Main.Controls.Terrain
                 FlushAllTileIndexBatches();
             else
                 FlushAllTileBatches();
-            _grassRenderer.Flush();
+
+            if (!after)
+                _grassRenderer.Draw();
         }
 
         private void ResetMetrics()
@@ -373,6 +389,42 @@ namespace Client.Main.Controls.Terrain
             // Reset state tracking for new frame
             _lastBoundTexture = null;
             _lastBlendState = null;
+            ResetBatchTracking();
+        }
+
+        private void ResetBatchTracking()
+        {
+            for (int i = 0; i < _activeTileIndexTextures.Count; i++)
+            {
+                int t = _activeTileIndexTextures[i];
+                _tileIndexCounts[t] = 0;
+                _tileIndexActive[t] = false;
+            }
+            _activeTileIndexTextures.Clear();
+
+            for (int i = 0; i < _activeTileAlphaIndexTextures.Count; i++)
+            {
+                int t = _activeTileAlphaIndexTextures[i];
+                _tileAlphaIndexCounts[t] = 0;
+                _tileAlphaIndexActive[t] = false;
+            }
+            _activeTileAlphaIndexTextures.Clear();
+
+            for (int i = 0; i < _activeTileBatchTextures.Count; i++)
+            {
+                int t = _activeTileBatchTextures[i];
+                _tileBatchCounts[t] = 0;
+                _tileBatchActive[t] = false;
+            }
+            _activeTileBatchTextures.Clear();
+
+            for (int i = 0; i < _activeTileAlphaBatchTextures.Count; i++)
+            {
+                int t = _activeTileAlphaBatchTextures[i];
+                _tileAlphaCounts[t] = 0;
+                _tileAlphaBatchActive[t] = false;
+            }
+            _activeTileAlphaBatchTextures.Clear();
         }
 
         private bool BuildVisibleLodGrid()
@@ -562,8 +614,16 @@ namespace Client.Main.Controls.Terrain
             effect.Parameters["Projection"]?.SetValue(Camera.Instance.Projection);
             effect.Parameters["WorldViewProjection"]?.SetValue(world * Camera.Instance.View * Camera.Instance.Projection);
             effect.Parameters["EyePosition"]?.SetValue(Camera.Instance.Position);
-            // Use terrain technique instead of setting uniforms (better performance, no shader branches)
-            effect.CurrentTechnique = effect.Techniques["DynamicLighting_Terrain"];
+            // Use terrain-specific technique, with a reduced variant for integrated GPUs.
+            string preferredTechnique = Constants.OPTIMIZE_FOR_INTEGRATED_GPU
+                ? "DynamicLighting_Terrain_Low"
+                : "DynamicLighting_Terrain";
+            var terrainTechnique = TryGetTechnique(effect, preferredTechnique) ??
+                                   TryGetTechnique(effect, "DynamicLighting_Terrain");
+            if (terrainTechnique == null)
+                return false;
+
+            effect.CurrentTechnique = terrainTechnique;
             effect.Parameters["UseProceduralTerrainUV"]?.SetValue(_useTerrainIndexBatching ? 1.0f : 0.0f);
             effect.Parameters["IsWaterTexture"]?.SetValue(0.0f);
             effect.Parameters["TerrainUvScale"]?.SetValue(Vector2.Zero);
@@ -605,90 +665,141 @@ namespace Client.Main.Controls.Terrain
                 return;
             }
 
-            var activeLights = _lightManager.ActiveLights;
-            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 4 : 16;
-            int count = 0;
+            int uploadCapacity = ResolveDynamicLightParameterCapacity(effect);
+            if (uploadCapacity <= 0)
+            {
+                effect.Parameters["ActiveLightCount"]?.SetValue(0);
+                effect.Parameters["MaxLightsToProcess"]?.SetValue(0);
+                return;
+            }
+
+            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 8 : DynamicLightArrayCapacity;
+            maxLights = Math.Min(maxLights, Math.Min(_cachedLightPositions.Length, uploadCapacity));
             int version = _lightManager.ActiveLightsVersion;
 
-            if (activeLights != null && activeLights.Count > 0 && Camera.Instance != null)
+            // Only rebuild when the light snapshot changes (throttled at
+            // DYNAMIC_LIGHT_UPDATE_FPS).  Between updates, reuse the cached arrays.
+            if (version != _lastLightsVersion || maxLights != _lastLightSelectionMaxLights)
             {
-                if (_cachedSelectedLightsVersion != version || _cachedSelectedLightsMax != maxLights)
+                _lastLightsVersion = version;
+                _lastLightSelectionMaxLights = maxLights;
+                _lastLightCount = 0;
+
+                var activeLights = _lightManager.ActiveLights;
+                if (activeLights != null && activeLights.Count > 0)
                 {
-                    if (TryGetVisibleTerrainBounds(out Vector2 visibleMin, out Vector2 visibleMax))
+                    Vector2 focusPos = Camera.Instance != null
+                        ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
+                        : Vector2.Zero;
+
+                    // Prefer CPU-side ranking for integrated GPUs and dense light scenes
+                    // so the shader receives only the most relevant lights.
+                    bool preferScoredSelection = Constants.OPTIMIZE_FOR_INTEGRATED_GPU || activeLights.Count > 8;
+                    if (preferScoredSelection)
                     {
-                        _cachedSelectedLightCount = SelectRelevantLights(activeLights, visibleMin, visibleMax, maxLights);
+                        _lastLightCount = SelectLightsByProximity(activeLights, focusPos, maxLights);
+                    }
+                    else if (activeLights.Count <= maxLights)
+                    {
+                        // All lights fit — copy in natural order.  No scoring or
+                        // sorting needed because the shader processes ALL uploaded
+                        // lights (TERRAIN_MAX_LIGHTS == MAX_LIGHTS).  Stable order
+                        // eliminates flickering from lights swapping rank each snapshot.
+                        int count = activeLights.Count;
+                        for (int i = 0; i < count; i++)
+                        {
+                            var light = activeLights[i];
+                            _cachedLightPositions[i] = light.Position;
+                            _cachedLightColors[i] = light.Color;
+                            _cachedLightRadii[i] = light.Radius;
+                            _cachedLightIntensities[i] = light.Intensity;
+                        }
+                        _lastLightCount = count;
                     }
                     else
                     {
-                        // Fallback: select around what the camera is looking at (target).
-                        var camTarget = Camera.Instance.Target;
-                        var referencePos = new Vector2(camTarget.X, camTarget.Y);
-                        _cachedSelectedLightCount = SelectRelevantLights(activeLights, referencePos, maxLights);
+                        // Rare: more active lights than array capacity — pick best by proximity.
+                        _lastLightCount = SelectLightsByProximity(activeLights, focusPos, maxLights);
                     }
-
-                    _cachedSelectedLightsVersion = version;
-                    _cachedSelectedLightsMax = maxLights;
                 }
-
-                count = _cachedSelectedLightCount;
-            }
-            else
-            {
-                _cachedSelectedLightCount = 0;
-                _cachedSelectedLightsVersion = version;
-                _cachedSelectedLightsMax = maxLights;
             }
 
-            effect.Parameters["ActiveLightCount"]?.SetValue(count);
+            _lastLightCount = Math.Min(_lastLightCount, maxLights);
+            effect.Parameters["ActiveLightCount"]?.SetValue(_lastLightCount);
             effect.Parameters["MaxLightsToProcess"]?.SetValue(maxLights);
-            if (count > 0)
+            if (_lastLightCount > 0)
+            {
+                UploadDynamicLightArrays(effect, uploadCapacity);
+            }
+        }
+
+        private int ResolveDynamicLightParameterCapacity(Effect effect)
+        {
+            int fallback = _cachedLightPositions.Length;
+            int positions = GetEffectParameterArrayCapacity(effect?.Parameters["LightPositions"], fallback);
+            int colors = GetEffectParameterArrayCapacity(effect?.Parameters["LightColors"], fallback);
+            int radii = GetEffectParameterArrayCapacity(effect?.Parameters["LightRadii"], fallback);
+            int intensities = GetEffectParameterArrayCapacity(effect?.Parameters["LightIntensities"], fallback);
+
+            int capacity = Math.Min(Math.Min(positions, colors), Math.Min(radii, intensities));
+            capacity = Math.Min(capacity, fallback);
+            return Math.Max(capacity, 1);
+        }
+
+        private static int GetEffectParameterArrayCapacity(EffectParameter parameter, int fallback)
+        {
+            if (parameter?.Elements == null || parameter.Elements.Count <= 0)
+                return fallback;
+
+            return parameter.Elements.Count;
+        }
+
+        private void EnsureDynamicLightUploadBuffers(int requiredCapacity)
+        {
+            if (_lightUploadPositions.Length != requiredCapacity)
+            {
+                _lightUploadPositions = new Vector3[requiredCapacity];
+                _lightUploadColors = new Vector3[requiredCapacity];
+                _lightUploadRadii = new float[requiredCapacity];
+                _lightUploadIntensities = new float[requiredCapacity];
+            }
+        }
+
+        private void UploadDynamicLightArrays(Effect effect, int uploadCapacity)
+        {
+            if (uploadCapacity <= 0 || effect == null)
+                return;
+
+            if (uploadCapacity == _cachedLightPositions.Length)
             {
                 effect.Parameters["LightPositions"]?.SetValue(_cachedLightPositions);
                 effect.Parameters["LightColors"]?.SetValue(_cachedLightColors);
                 effect.Parameters["LightRadii"]?.SetValue(_cachedLightRadii);
                 effect.Parameters["LightIntensities"]?.SetValue(_cachedLightIntensities);
-            }
-        }
-
-        private bool TryGetVisibleTerrainBounds(out Vector2 min, out Vector2 max)
-        {
-            min = new Vector2(float.MaxValue, float.MaxValue);
-            max = new Vector2(float.MinValue, float.MinValue);
-
-            if (_visibility?.VisibleBlocks == null || _visibility.VisibleBlocks.Count == 0)
-                return false;
-
-            bool any = false;
-            foreach (var block in _visibility.VisibleBlocks)
-            {
-                if (block == null)
-                    continue;
-
-                var bmin = block.Bounds.Min;
-                var bmax = block.Bounds.Max;
-
-                if (bmin.X < min.X) min.X = bmin.X;
-                if (bmin.Y < min.Y) min.Y = bmin.Y;
-                if (bmax.X > max.X) max.X = bmax.X;
-                if (bmax.Y > max.Y) max.Y = bmax.Y;
-
-                any = true;
+                return;
             }
 
-            return any;
+            EnsureDynamicLightUploadBuffers(uploadCapacity);
+            Array.Copy(_cachedLightPositions, _lightUploadPositions, uploadCapacity);
+            Array.Copy(_cachedLightColors, _lightUploadColors, uploadCapacity);
+            Array.Copy(_cachedLightRadii, _lightUploadRadii, uploadCapacity);
+            Array.Copy(_cachedLightIntensities, _lightUploadIntensities, uploadCapacity);
+
+            effect.Parameters["LightPositions"]?.SetValue(_lightUploadPositions);
+            effect.Parameters["LightColors"]?.SetValue(_lightUploadColors);
+            effect.Parameters["LightRadii"]?.SetValue(_lightUploadRadii);
+            effect.Parameters["LightIntensities"]?.SetValue(_lightUploadIntensities);
         }
 
-        private static float DistanceSquaredPointToRect(Vector2 p, Vector2 min, Vector2 max)
-        {
-            float cx = p.X < min.X ? min.X : (p.X > max.X ? max.X : p.X);
-            float cy = p.Y < min.Y ? min.Y : (p.Y > max.Y ? max.Y : p.Y);
-
-            float dx = p.X - cx;
-            float dy = p.Y - cy;
-            return dx * dx + dy * dy;
-        }
-
-        private int SelectRelevantLights(IReadOnlyList<DynamicLightSnapshot> activeLights, Vector2 regionMin, Vector2 regionMax, int maxLights)
+        /// <summary>
+        /// Selects up to <paramref name="maxLights"/> from the active light pool,
+        /// ranked by proximity-weighted intensity, and sorts the result descending
+        /// so the first slots contain the most impactful lights.
+        /// </summary>
+        private int SelectLightsByProximity(
+            IReadOnlyList<DynamicLightSnapshot> activeLights,
+            Vector2 focusPos,
+            int maxLights)
         {
             maxLights = Math.Min(maxLights, _cachedLightPositions.Length);
             if (activeLights == null || activeLights.Count == 0 || maxLights <= 0)
@@ -706,33 +817,31 @@ namespace Client.Main.Controls.Terrain
                 if (radiusSq <= 0.001f) continue;
 
                 var lightPos2 = new Vector2(light.Position.X, light.Position.Y);
-                float distSq = DistanceSquaredPointToRect(lightPos2, regionMin, regionMax);
-                if (distSq >= radiusSq)
-                    continue;
+                float distSq = Vector2.DistanceSquared(lightPos2, focusPos);
 
-                float influence = (1f - distSq / radiusSq) * light.Intensity;
-                if (influence <= MinLightInfluence)
-                    continue;
+                // Score: intensity weighted by proximity.  radiusSq in the denominator
+                // ensures large-radius lights score higher (they illuminate more terrain).
+                float score = light.Intensity * radiusSq / (radiusSq + distSq + 1f);
 
                 if (selected < maxLights)
                 {
-                    _cachedLightScores[selected] = influence;
+                    _cachedLightScores[selected] = score;
                     _cachedLightPositions[selected] = light.Position;
                     _cachedLightColors[selected] = light.Color;
                     _cachedLightRadii[selected] = radius;
                     _cachedLightIntensities[selected] = light.Intensity;
 
-                    if (influence < weakestScore)
+                    if (score < weakestScore)
                     {
-                        weakestScore = influence;
+                        weakestScore = score;
                         weakestIndex = selected;
                     }
 
                     selected++;
                 }
-                else if (influence > weakestScore)
+                else if (score > weakestScore)
                 {
-                    _cachedLightScores[weakestIndex] = influence;
+                    _cachedLightScores[weakestIndex] = score;
                     _cachedLightPositions[weakestIndex] = light.Position;
                     _cachedLightColors[weakestIndex] = light.Color;
                     _cachedLightRadii[weakestIndex] = radius;
@@ -742,83 +851,54 @@ namespace Client.Main.Controls.Terrain
                     weakestIndex = 0;
                     for (int j = 1; j < selected; j++)
                     {
-                        float score = _cachedLightScores[j];
-                        if (score < weakestScore)
+                        float s = _cachedLightScores[j];
+                        if (s < weakestScore)
                         {
-                            weakestScore = score;
+                            weakestScore = s;
                             weakestIndex = j;
                         }
                     }
                 }
             }
+
+            // Sort descending so the shader's TERRAIN_MAX_LIGHTS limit gets the best lights.
+            if (selected > 1)
+                SortSelectedLightsByScore(selected);
 
             return selected;
         }
 
-        private int SelectRelevantLights(IReadOnlyList<DynamicLightSnapshot> activeLights, Vector2 referencePos, int maxLights)
+        /// <summary>
+        /// Insertion sort (descending) on the cached light arrays by score.
+        /// Count is at most 32, so this is fast.
+        /// </summary>
+        private void SortSelectedLightsByScore(int count)
         {
-            maxLights = Math.Min(maxLights, _cachedLightPositions.Length);
-            if (activeLights == null || activeLights.Count == 0 || maxLights <= 0)
-                return 0;
-
-            int selected = 0;
-            float weakestScore = float.MaxValue;
-            int weakestIndex = 0;
-
-            for (int i = 0; i < activeLights.Count; i++)
+            for (int i = 1; i < count; i++)
             {
-                var light = activeLights[i];
-                float radius = light.Radius;
-                float radiusSq = radius * radius;
+                float key = _cachedLightScores[i];
+                var pos = _cachedLightPositions[i];
+                var col = _cachedLightColors[i];
+                float rad = _cachedLightRadii[i];
+                float inten = _cachedLightIntensities[i];
 
-                var diff = new Vector2(light.Position.X, light.Position.Y) - referencePos;
-                float distSq = diff.LengthSquared();
-                if (distSq >= radiusSq)
-                    continue;
-
-                float influence = (1f - distSq / radiusSq) * light.Intensity;
-                if (influence <= MinLightInfluence)
-                    continue;
-
-                if (selected < maxLights)
+                int j = i - 1;
+                while (j >= 0 && _cachedLightScores[j] < key)
                 {
-                    _cachedLightScores[selected] = influence;
-                    _cachedLightPositions[selected] = light.Position;
-                    _cachedLightColors[selected] = light.Color;
-                    _cachedLightRadii[selected] = radius;
-                    _cachedLightIntensities[selected] = light.Intensity;
-
-                    if (influence < weakestScore)
-                    {
-                        weakestScore = influence;
-                        weakestIndex = selected;
-                    }
-
-                    selected++;
+                    _cachedLightScores[j + 1] = _cachedLightScores[j];
+                    _cachedLightPositions[j + 1] = _cachedLightPositions[j];
+                    _cachedLightColors[j + 1] = _cachedLightColors[j];
+                    _cachedLightRadii[j + 1] = _cachedLightRadii[j];
+                    _cachedLightIntensities[j + 1] = _cachedLightIntensities[j];
+                    j--;
                 }
-                else if (influence > weakestScore)
-                {
-                    _cachedLightScores[weakestIndex] = influence;
-                    _cachedLightPositions[weakestIndex] = light.Position;
-                    _cachedLightColors[weakestIndex] = light.Color;
-                    _cachedLightRadii[weakestIndex] = radius;
-                    _cachedLightIntensities[weakestIndex] = light.Intensity;
 
-                    weakestScore = _cachedLightScores[0];
-                    weakestIndex = 0;
-                    for (int j = 1; j < selected; j++)
-                    {
-                        float score = _cachedLightScores[j];
-                        if (score < weakestScore)
-                        {
-                            weakestScore = score;
-                            weakestIndex = j;
-                        }
-                    }
-                }
+                _cachedLightScores[j + 1] = key;
+                _cachedLightPositions[j + 1] = pos;
+                _cachedLightColors[j + 1] = col;
+                _cachedLightRadii[j + 1] = rad;
+                _cachedLightIntensities[j + 1] = inten;
             }
-
-            return selected;
         }
 
         private void RenderTerrainBlock(int xi, int yi, bool after, int lodStep, TerrainBlock block = null)
@@ -942,10 +1022,6 @@ namespace Client.Main.Controls.Terrain
                     }
                 }
 
-                // Grass is a fine-detail effect; skip for super-tiles (lodInt > 1) to avoid huge per-frame CPU cost.
-                if (lodInt == 1 && Constants.DRAW_GRASS)
-                    _grassRenderer.RenderGrassForTile(xi, yi, xi, yi, lodFactor, WorldIndex);
-
                 return;
             }
 
@@ -999,9 +1075,6 @@ namespace Client.Main.Controls.Terrain
                 }
             }
 
-            // Grass is a fine-detail effect; skip for super-tiles (lodInt > 1) to avoid huge per-frame CPU cost.
-            if (lodInt == 1 && Constants.DRAW_GRASS)
-                _grassRenderer.RenderGrassForTile(xi, yi, xi, yi, lodFactor, WorldIndex);
         }
 
         private void RenderTileSkirts(int xi, int yi, float lodFactor, byte edgeMask, int textureIndex, bool alphaLayer)
@@ -1322,10 +1395,11 @@ namespace Client.Main.Controls.Terrain
 
         private void ApplyAlphaToLights(byte a1, byte a2, byte a3, byte a4)
         {
-            _tempTerrainLights[0] *= a1 / 255f; _tempTerrainLights[0].A = a1;
-            _tempTerrainLights[1] *= a2 / 255f; _tempTerrainLights[1].A = a2;
-            _tempTerrainLights[2] *= a3 / 255f; _tempTerrainLights[2].A = a3;
-            _tempTerrainLights[3] *= a4 / 255f; _tempTerrainLights[3].A = a4;
+            // Keep lighting intact; alpha controls only the blend factor in shader.
+            _tempTerrainLights[0].A = a1;
+            _tempTerrainLights[1].A = a2;
+            _tempTerrainLights[2].A = a3;
+            _tempTerrainLights[3].A = a4;
         }
 
         private static bool SupportsProceduralTerrainUv(Effect effect)
@@ -1336,6 +1410,22 @@ namespace Client.Main.Controls.Terrain
             return effect.Parameters["UseProceduralTerrainUV"] != null &&
                    effect.Parameters["TerrainUvScale"] != null &&
                    effect.Parameters["IsWaterTexture"] != null;
+        }
+
+        private static EffectTechnique TryGetTechnique(Effect effect, string name)
+        {
+            if (effect == null || string.IsNullOrEmpty(name))
+                return null;
+
+            var techniques = effect.Techniques;
+            for (int i = 0; i < techniques.Count; i++)
+            {
+                var technique = techniques[i];
+                if (string.Equals(technique.Name, name, StringComparison.Ordinal))
+                    return technique;
+            }
+
+            return null;
         }
 
         private void EnsureTerrainVertexBuffers()
@@ -1401,19 +1491,14 @@ namespace Client.Main.Controls.Terrain
                 }
                 _terrainVertexBufferBase.SetData(verts, 0, total);
 
-                // Alpha buffer: premultiply baked light by alpha map (matches old CPU path).
+                // Alpha buffer: keep baked light intact; alpha controls layer blend in shader.
                 for (int i = 0; i < total; i++)
                 {
                     Color baseLight = _cachedVertexBaseLights[i];
                     byte a = alphaMap != null ? alphaMap[i] : (byte)0;
-
-                    int r = baseLight.R * a / 255;
-                    int g = baseLight.G * a / 255;
-                    int b = baseLight.B * a / 255;
-
                     verts[i] = new TerrainVertexPositionColorNormalTexture(
                         _cachedVertexPositions[i],
-                        new Color((byte)r, (byte)g, (byte)b, a),
+                        new Color(baseLight.R, baseLight.G, baseLight.B, a),
                         _cachedVertexNormals[i],
                         Vector2.Zero);
                 }
@@ -1453,6 +1538,8 @@ namespace Client.Main.Controls.Terrain
                 dstOff = 0;
             }
 
+            TrackIndexTexture(texIndex, alphaLayer);
+
             batch[dstOff + 0] = i1;
             batch[dstOff + 1] = i2;
             batch[dstOff + 2] = i3;
@@ -1481,7 +1568,7 @@ namespace Client.Main.Controls.Terrain
             if (effect == null || effect.CurrentTechnique == null)
                 return;
 
-            var blendState = alphaLayer ? BlendState.AlphaBlend : BlendState.Opaque;
+            var blendState = alphaLayer ? BlendState.NonPremultiplied : BlendState.Opaque;
             if (_lastBlendState != blendState)
             {
                 _graphicsDevice.BlendState = blendState;
@@ -1543,18 +1630,24 @@ namespace Client.Main.Controls.Terrain
         private void FlushAllTileIndexBatches()
         {
             // First pass: render all opaque batches
-            for (int t = 0; t < 256; t++)
+            for (int i = 0; i < _activeTileIndexTextures.Count; i++)
             {
+                int t = _activeTileIndexTextures[i];
                 if (_tileIndexCounts[t] > 0)
                     FlushSingleTextureIndexed(t, alphaLayer: false);
+                _tileIndexActive[t] = false;
             }
+            _activeTileIndexTextures.Clear();
 
             // Second pass: render all alpha batches
-            for (int t = 0; t < 256; t++)
+            for (int i = 0; i < _activeTileAlphaIndexTextures.Count; i++)
             {
+                int t = _activeTileAlphaIndexTextures[i];
                 if (_tileAlphaIndexCounts[t] > 0)
                     FlushSingleTextureIndexed(t, alphaLayer: true);
+                _tileAlphaIndexActive[t] = false;
             }
+            _activeTileAlphaIndexTextures.Clear();
 
             if (_lastBlendState != BlendState.Opaque)
             {
@@ -1575,6 +1668,8 @@ namespace Client.Main.Controls.Terrain
                 dstOff = 0;
             }
 
+            TrackVertexTexture(texIndex, alphaLayer);
+
             // Manual unroll for better performance than Array.Copy
             batch[dstOff + 0] = verts[0];
             batch[dstOff + 1] = verts[1];
@@ -1593,7 +1688,7 @@ namespace Client.Main.Controls.Terrain
             var batch = GetTileBatchBuffer(texIndex, alphaLayer);
             var texture = _data.Textures[texIndex];
             if (texture == null) return; // Added null check for texture
-            var blendState = alphaLayer ? BlendState.AlphaBlend : BlendState.Opaque;
+            var blendState = alphaLayer ? BlendState.NonPremultiplied : BlendState.Opaque;
 
             if (_useDynamicLightingShader)
             {
@@ -1697,24 +1792,68 @@ namespace Client.Main.Controls.Terrain
             // then ALL alpha layers. This preserves the correct depth/blend order.
 
             // First pass: render all opaque batches
-            for (int t = 0; t < 256; t++)
+            for (int i = 0; i < _activeTileBatchTextures.Count; i++)
             {
+                int t = _activeTileBatchTextures[i];
                 if (_tileBatchCounts[t] > 0)
                     FlushSingleTexture(t, alphaLayer: false);
+                _tileBatchActive[t] = false;
             }
+            _activeTileBatchTextures.Clear();
 
             // Second pass: render all alpha batches
-            for (int t = 0; t < 256; t++)
+            for (int i = 0; i < _activeTileAlphaBatchTextures.Count; i++)
             {
+                int t = _activeTileAlphaBatchTextures[i];
                 if (_tileAlphaCounts[t] > 0)
                     FlushSingleTexture(t, alphaLayer: true);
+                _tileAlphaBatchActive[t] = false;
             }
+            _activeTileAlphaBatchTextures.Clear();
 
             if (_lastBlendState != BlendState.Opaque)
             {
                 _graphicsDevice.BlendState = BlendState.Opaque;
                 _lastBlendState = BlendState.Opaque;
             }
+        }
+
+        private void TrackIndexTexture(int texIndex, bool alphaLayer)
+        {
+            if (alphaLayer)
+            {
+                if (_tileAlphaIndexActive[texIndex])
+                    return;
+
+                _tileAlphaIndexActive[texIndex] = true;
+                _activeTileAlphaIndexTextures.Add(texIndex);
+                return;
+            }
+
+            if (_tileIndexActive[texIndex])
+                return;
+
+            _tileIndexActive[texIndex] = true;
+            _activeTileIndexTextures.Add(texIndex);
+        }
+
+        private void TrackVertexTexture(int texIndex, bool alphaLayer)
+        {
+            if (alphaLayer)
+            {
+                if (_tileAlphaBatchActive[texIndex])
+                    return;
+
+                _tileAlphaBatchActive[texIndex] = true;
+                _activeTileAlphaBatchTextures.Add(texIndex);
+                return;
+            }
+
+            if (_tileBatchActive[texIndex])
+                return;
+
+            _tileBatchActive[texIndex] = true;
+            _activeTileBatchTextures.Add(texIndex);
         }
 
         private static int GetTerrainIndex(int x, int y)

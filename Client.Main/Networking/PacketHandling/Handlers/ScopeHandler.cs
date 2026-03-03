@@ -14,6 +14,7 @@ using Client.Main.Objects;
 using Client.Main.Objects.Player;
 using Client.Main.Objects.Effects;
 using Client.Main.Core.Client;
+using Client.Main.Configuration;
 using Client.Main.Scenes;
 using Client.Main.Controllers;
 using System.Threading;
@@ -40,11 +41,19 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         private readonly PartyManager _partyManager;
         private readonly TargetProtocolVersion _targetVersion;
         private readonly ILoggerFactory _loggerFactory;
+        private readonly bool _useExtendedWalkFormat;
+        private readonly Dictionary<byte, byte> _serverToClientDirMap;
 
         private static readonly List<NpcScopeObject> _pendingNpcsMonsters = new List<NpcScopeObject>();
         private static readonly List<PlayerScopeObject> _pendingPlayers = new List<PlayerScopeObject>();
+        private static readonly HashSet<ushort> _pendingNpcMonsterIds = new();
+        private static readonly HashSet<ushort> _pendingPlayerIds = new();
         private static readonly ConcurrentQueue<NpcSpawnRequest> _npcSpawnQueue = new();
+        private static readonly ConcurrentQueue<PlayerSpawnRequest> _playerSpawnQueue = new();
+        private static readonly ConcurrentQueue<DroppedItemWorkItem> _droppedItemQueue = new();
         private static int _npcSpawnsInFlight;
+        private static int _playerSpawnWorkerRunning;
+        private static int _droppedItemWorkerRunning;
         private const int MaxNpcSpawnsPerFrame = 8;
         private const int MaxConcurrentNpcSpawns = 8;
         private static ScopeHandler _activeInstance;
@@ -56,7 +65,8 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             CharacterState characterState,
             NetworkManager networkManager,
             PartyManager partyManager,
-            TargetProtocolVersion targetVersion)
+            TargetProtocolVersion targetVersion,
+            MuOnlineSettings settings)
         {
             _logger = loggerFactory.CreateLogger<ScopeHandler>();
             _scopeManager = scopeManager;
@@ -66,6 +76,57 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             _targetVersion = targetVersion;
             _loggerFactory = loggerFactory;
             _activeInstance = this;
+
+            // Determine if server sends ObjectWalkedExtended based on client version.
+            // OpenMU uses [MinimumClient(106, 3)] for Extended format (version >= 1.06.3).
+            _useExtendedWalkFormat = targetVersion >= TargetProtocolVersion.Season6
+                                    && ParseClientVersionMajorMinor(settings.ClientVersion) >= 107;
+
+            // Build server→client direction map (inverse of the client→server DirectionMap).
+            _serverToClientDirMap = new Dictionary<byte, byte>();
+            var clientToServer = networkManager.GetDirectionMap();
+            if (clientToServer != null)
+            {
+                foreach (var kvp in clientToServer)
+                {
+                    _serverToClientDirMap[kvp.Value] = kvp.Key;
+                }
+            }
+
+            _logger.LogInformation("ScopeHandler: UseExtendedWalkFormat={Extended}, ServerToClientDirMap entries={Count}",
+                _useExtendedWalkFormat, _serverToClientDirMap.Count);
+        }
+
+        /// <summary>
+        /// Parses "X.YYz" client version string to major*100+minor (e.g. "2.04d" → 204, "1.04d" → 104).
+        /// </summary>
+        private static int ParseClientVersionMajorMinor(string clientVersion)
+        {
+            if (string.IsNullOrEmpty(clientVersion) || clientVersion.Length < 4)
+                return 0;
+
+            // Format: "X.YYz" where X=season, YY=episode, z=patch letter
+            if (int.TryParse(clientVersion.AsSpan(0, 1), out int season)
+                && int.TryParse(clientVersion.AsSpan(2, 2), out int episode))
+            {
+                return season * 100 + episode;
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// Maps a server direction byte (0-7) to the client Direction enum using the inverse direction map.
+        /// </summary>
+        private Client.Main.Models.Direction MapServerDirection(byte serverDirection)
+        {
+            if (serverDirection > 7)
+                return Client.Main.Models.Direction.South;
+
+            if (_serverToClientDirMap.TryGetValue(serverDirection, out byte clientDir))
+                return (Client.Main.Models.Direction)clientDir;
+
+            return (Client.Main.Models.Direction)serverDirection;
         }
 
         private static void RecordHitPacket(ReadOnlySpan<byte> packetSpan)
@@ -91,8 +152,9 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         {
             lock (_pendingPlayers)
             {
-                var copy = _pendingPlayers.ToList();
+                var copy = new List<PlayerScopeObject>(_pendingPlayers);
                 _pendingPlayers.Clear();
+                _pendingPlayerIds.Clear();
                 return copy;
             }
         }
@@ -104,8 +166,9 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         {
             lock (_pendingNpcsMonsters)
             {
-                var copy = _pendingNpcsMonsters.ToList();
+                var copy = new List<NpcScopeObject>(_pendingNpcsMonsters);
                 _pendingNpcsMonsters.Clear();
+                _pendingNpcMonsterIds.Clear();
                 return copy;
             }
         }
@@ -165,7 +228,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 {
                     lock (_pendingPlayers)
                     {
-                        if (!_pendingPlayers.Any(p => p.Id == masked))
+                        if (_pendingPlayerIds.Add(masked))
                         {
                             _pendingPlayers.Add(new PlayerScopeObject(masked, raw, c.CurrentPositionX, c.CurrentPositionY, c.Name, cls, c.Appearance.ToArray()));
                         }
@@ -197,19 +260,48 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 ReadOnlyMemory<byte> appearanceData)
         {
             _logger.LogDebug($"[Spawn] Received request for {name} ({maskedId:X4}).");
+            _playerSpawnQueue.Enqueue(new PlayerSpawnRequest(world, maskedId, rawId, x, y, name, cls, appearanceData));
+            TryStartPlayerSpawnWorker();
+        }
 
-            // Process player spawning asynchronously without blocking
-            _ = Task.Run(async () =>
+        private void TryStartPlayerSpawnWorker()
+        {
+            if (Interlocked.CompareExchange(ref _playerSpawnWorkerRunning, 1, 0) != 0)
+                return;
+
+            _ = ProcessPlayerSpawnQueueAsync();
+        }
+
+        private async Task ProcessPlayerSpawnQueueAsync()
+        {
+            try
             {
-                try
+                while (_playerSpawnQueue.TryDequeue(out var request))
                 {
-                    await ProcessPlayerSpawnAsync(world, maskedId, rawId, x, y, name, cls, appearanceData);
+                    try
+                    {
+                        await ProcessPlayerSpawnAsync(
+                            request.World,
+                            request.MaskedId,
+                            request.RawId,
+                            request.X,
+                            request.Y,
+                            request.Name,
+                            request.Class,
+                            request.AppearanceData);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"[Spawn] Error processing player spawn for {request.Name} ({request.MaskedId:X4}).");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"[Spawn] Error processing player spawn for {name} ({maskedId:X4}).");
-                }
-            });
+            }
+            finally
+            {
+                Volatile.Write(ref _playerSpawnWorkerRunning, 0);
+                if (!_playerSpawnQueue.IsEmpty)
+                    TryStartPlayerSpawnWorker();
+            }
         }
 
         private async Task ProcessPlayerSpawnAsync(
@@ -306,20 +398,19 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         [PacketHandler(0x13, PacketRouter.NoSubCode)] // AddNpcToScope
         public Task HandleAddNpcToScopeAsync(Memory<byte> packet)
         {
-            ParseAndQueueNpcSpawns(packet.ToArray());
+            ParseAndQueueNpcSpawns(packet);
             return Task.CompletedTask;
         }
 
         [PacketHandler(0x16, PacketRouter.NoSubCode)] // AddMonstersToScope
         public Task HandleAddMonstersToScopeAsync(Memory<byte> packet)
         {
-            ParseAndQueueNpcSpawns(packet.ToArray());
+            ParseAndQueueNpcSpawns(packet);
             return Task.CompletedTask;
         }
 
-        private void ParseAndQueueNpcSpawns(byte[] packetData)
+        private void ParseAndQueueNpcSpawns(Memory<byte> packet)
         {
-            Memory<byte> packet = packetData;
             int npcCount = 0, firstOffset = 0, dataSize = 0;
             Func<Memory<byte>, (ushort id, ushort type, byte x, byte y, byte direction)> readNpc = null!;
 
@@ -443,9 +534,9 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             {
                 lock (_pendingNpcsMonsters)
                 {
-                    if (!_pendingNpcsMonsters.Any(p => p.Id == maskedId))
+                    if (_pendingNpcMonsterIds.Add(maskedId))
                     {
-                        _pendingNpcsMonsters.Add(new NpcScopeObject(maskedId, rawId, x, y, type, name) { Direction = direction });
+                        _pendingNpcsMonsters.Add(new NpcScopeObject(maskedId, rawId, x, y, type, name) { Direction = (byte)MapServerDirection(direction) });
                     }
                 }
                 return;
@@ -466,7 +557,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             // Configure the object's properties
             obj.NetworkId = maskedId;
             obj.Location = new Vector2(x, y);
-            obj.Direction = (Client.Main.Models.Direction)direction;
+            obj.Direction = MapServerDirection(direction);
             obj.World = worldRef;
 
             // Load assets in background
@@ -570,6 +661,52 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             public ushort Type { get; }
             public string Name { get; }
             public ushort MapId { get; }
+        }
+
+        private readonly struct PlayerSpawnRequest
+        {
+            public PlayerSpawnRequest(
+                WalkableWorldControl world,
+                ushort maskedId,
+                ushort rawId,
+                byte x,
+                byte y,
+                string name,
+                CharacterClassNumber @class,
+                ReadOnlyMemory<byte> appearanceData)
+            {
+                World = world;
+                MaskedId = maskedId;
+                RawId = rawId;
+                X = x;
+                Y = y;
+                Name = name;
+                Class = @class;
+                AppearanceData = appearanceData;
+            }
+
+            public WalkableWorldControl World { get; }
+            public ushort MaskedId { get; }
+            public ushort RawId { get; }
+            public byte X { get; }
+            public byte Y { get; }
+            public string Name { get; }
+            public CharacterClassNumber Class { get; }
+            public ReadOnlyMemory<byte> AppearanceData { get; }
+        }
+
+        private readonly struct DroppedItemWorkItem
+        {
+            public DroppedItemWorkItem(ScopeObject dropObj, ushort maskedId, string soundPath)
+            {
+                DropObject = dropObj;
+                MaskedId = maskedId;
+                SoundPath = soundPath;
+            }
+
+            public ScopeObject DropObject { get; }
+            public ushort MaskedId { get; }
+            public string SoundPath { get; }
         }
 
         [PacketHandler(0x25, PacketRouter.NoSubCode)]
@@ -821,11 +958,19 @@ namespace Client.Main.Networking.PacketHandling.Handlers
 
                 float? healthFraction = null;
                 float? shieldFraction = null;
-                const float statusScale = 1f / 250f;
+                const float statusScale = 1f / 255f;
 
                 if (healthStatus is { } hs && hs != byte.MaxValue)
                 {
                     healthFraction = Math.Clamp(hs * statusScale, 0f, 1f);
+                }
+                else if (healthStatus.HasValue)
+                {
+                    _logger.LogDebug("ObjectHit 0x11: HealthStatus unknown (0xFF) for {Id:X4}.", maskedId);
+                }
+                else
+                {
+                    _logger.LogDebug("ObjectHit 0x11: HealthStatus missing (short packet) for {Id:X4}.", maskedId);
                 }
 
                 if (shieldStatus is { } ss && ss != byte.MaxValue)
@@ -1013,29 +1158,42 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                     _logger.LogWarning("ItemsDropped packet too short: {Length}", packet.Length);
                     return;
                 }
-                var droppedItems = new ItemsDropped(packet);
-                _logger.LogInformation("Received ItemsDropped (S6+): {Count} items.", droppedItems.ItemCount);
+                byte itemCount = packet.Span[4];
+                _logger.LogInformation("Received ItemsDropped (S6+): {Count} items.", itemCount);
 
-                int dataLength = 12; // typical for S6
-                int structSize = ItemsDropped.DroppedItem.GetRequiredSize(dataLength);
                 int offset = PrefixSize;
-
-                for (int i = 0; i < droppedItems.ItemCount; i++, offset += structSize)
+                for (int i = 0; i < itemCount; i++)
                 {
-                    if (offset + structSize > packet.Length)
+                    if (offset + 4 > packet.Length)
                     {
                         _logger.LogWarning("Packet too short for item {Index}.", i);
                         break;
                     }
 
-                    var itemMem = packet.Slice(offset, structSize);
-                    var item = new ItemsDropped.DroppedItem(itemMem);
-                    ushort rawId = item.Id;
+                    ushort rawId = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(packet.Span.Slice(offset, 2));
                     ushort maskedId = (ushort)(rawId & 0x7FFF);
-                    byte x = item.PositionX;
-                    byte y = item.PositionY;
-                    var data = item.ItemData;
-                    bool isMoney = data.Length >= 6 && data[0] == 15 && (data[5] >> 4) == 14; // Money is ItemGroup 14, ItemId 15
+                    byte x = packet.Span[offset + 2];
+                    byte y = packet.Span[offset + 3];
+                    int itemDataOffset = offset + 4;
+
+                    if (itemDataOffset >= packet.Length)
+                    {
+                        _logger.LogWarning("Packet missing item data for item {Index}.", i);
+                        break;
+                    }
+
+                    ReadOnlySpan<byte> itemSpan = packet.Span.Slice(itemDataOffset);
+                    if (!ItemDataParser.TryGetExtendedItemLength(itemSpan, out int itemLen) || itemDataOffset + itemLen > packet.Length)
+                    {
+                        itemLen = Math.Min(itemSpan.Length, 12);
+                    }
+
+                    var data = itemSpan.Slice(0, itemLen);
+                    offset = itemDataOffset + itemLen;
+
+                    bool isMoney = ItemDataParser.TryGetGroupAndNumber(data, out var group, out var number)
+                                   && group == 14
+                                   && number == 15;
                     ScopeObject dropObj;
 
                     if (isMoney)
@@ -1044,44 +1202,21 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                         dropObj = new MoneyScopeObject(maskedId, rawId, x, y, amount);
                         _scopeManager.AddOrUpdateMoneyInScope(maskedId, rawId, x, y, amount);
                         _logger.LogDebug("Dropped Money: Amount={Amount}, ID={Id:X4}", amount, maskedId);
-
-                        // Process dropped money asynchronously
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await ProcessDroppedItemAsync(dropObj, maskedId, "Sound/pDropMoney.wav");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Error processing dropped money {maskedId:X4}");
-                            }
-                        });
+                        EnqueueDroppedItemProcessing(dropObj, maskedId, "Sound/pDropMoney.wav");
                     }
                     else
                     {
-                        dropObj = new ItemScopeObject(maskedId, rawId, x, y, data.ToArray());
-                        _scopeManager.AddOrUpdateItemInScope(maskedId, rawId, x, y, data.ToArray());
+                        byte[] dataCopy = data.ToArray();
+                        dropObj = new ItemScopeObject(maskedId, rawId, x, y, dataCopy);
+                        _scopeManager.AddOrUpdateItemInScope(maskedId, rawId, x, y, dataCopy);
                         _logger.LogDebug("Dropped Item: ID={Id:X4}, DataLen={Len}", maskedId, data.Length);
 
-                        // Process dropped item asynchronously
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                byte[] dataCopy = item.ItemData.ToArray();
-                                string itemName = ItemDatabase.GetItemName(dataCopy) ?? string.Empty;
-                                string soundPath = itemName.StartsWith("Jewel", StringComparison.OrdinalIgnoreCase)
-                                    ? "Sound/eGem.wav"
-                                    : "Sound/pDropItem.wav";
+                        string itemName = ItemDatabase.GetItemName(dataCopy) ?? string.Empty;
+                        string soundPath = itemName.StartsWith("Jewel", StringComparison.OrdinalIgnoreCase)
+                            ? "Sound/eGem.wav"
+                            : "Sound/pDropItem.wav";
 
-                                await ProcessDroppedItemAsync(dropObj, maskedId, soundPath);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Error processing dropped item {maskedId:X4}");
-                            }
-                        });
+                        EnqueueDroppedItemProcessing(dropObj, maskedId, soundPath);
                     }
                 }
             }
@@ -1110,19 +1245,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                         dropObj = new MoneyScopeObject(maskedId, rawId, x, y, amount);
                         _scopeManager.AddOrUpdateMoneyInScope(maskedId, rawId, x, y, amount);
                         _logger.LogDebug("Dropped Money (0.75): Amount={Amount}, ID={Id:X4}", amount, maskedId);
-
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                var newScopeObject = new MoneyScopeObject(maskedId, rawId, x, y, amount);
-                                await ProcessDroppedItemAsync(newScopeObject, maskedId, "Sound/pDropMoney.wav");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Error processing dropped money (0.75) {maskedId:X4}");
-                            }
-                        });
+                        EnqueueDroppedItemProcessing(dropObj, maskedId, "Sound/pDropMoney.wav");
                     }
                     else // Item identification
                     {
@@ -1133,24 +1256,12 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                             dropObj = new ItemScopeObject(maskedId, rawId, x, y, data);
                             _scopeManager.AddOrUpdateItemInScope(maskedId, rawId, x, y, data);
                             _logger.LogDebug("Dropped Item (0.75): ID={Id:X4}, DataLen={Len}", maskedId, dataLen075);
+                            string itemName = ItemDatabase.GetItemName(data) ?? string.Empty;
+                            string soundPath = itemName.StartsWith("Jewel", StringComparison.OrdinalIgnoreCase)
+                                ? "Sound/eGem.wav"
+                                : "Sound/pDropItem.wav";
 
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    var newScopeObject = new ItemScopeObject(maskedId, rawId, x, y, data);
-                                    string itemName = ItemDatabase.GetItemName(data) ?? string.Empty;
-                                    string soundPath = itemName.StartsWith("Jewel", StringComparison.OrdinalIgnoreCase)
-                                        ? "Sound/eGem.wav"
-                                        : "Sound/pDropItem.wav";
-
-                                    await ProcessDroppedItemAsync(newScopeObject, maskedId, soundPath);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogError(ex, $"Error processing dropped item (0.75) {maskedId:X4}");
-                                }
-                            });
+                            EnqueueDroppedItemProcessing(dropObj, maskedId, soundPath);
                         }
                         else
                         {
@@ -1207,44 +1318,40 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 _logger.LogWarning("Packet shorter than expected – adjusted removal count to {Count}.", count);
             }
 
-            // Process removals asynchronously
-            _ = Task.Run(() =>
+            var objectsToRemove = new List<ushort>(count);
+
+            for (int i = 0; i < count; i++)
             {
-                var objectsToRemove = new List<ushort>();
-
-                for (int i = 0; i < count; i++)
+                try
                 {
-                    try
-                    {
-                        var entry = removed[i];
-                        ushort rawId = entry.Id;
-                        ushort masked = (ushort)(rawId & 0x7FFF);
+                    var entry = removed[i];
+                    ushort rawId = entry.Id;
+                    ushort masked = (ushort)(rawId & 0x7FFF);
 
-                        _scopeManager.RemoveObjectFromScope(masked);
-                        objectsToRemove.Add(masked);
-                    }
-                    catch (Exception ex)
+                    _scopeManager.RemoveObjectFromScope(masked);
+                    objectsToRemove.Add(masked);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing dropped item removal at idx {Idx}.", i);
+                }
+            }
+
+            // Remove objects on main thread in one batched action.
+            MuGame.ScheduleOnMainThread(() =>
+            {
+                if (MuGame.Instance.ActiveScene?.World is not WalkableWorldControl world) return;
+
+                foreach (var masked in objectsToRemove)
+                {
+                    var obj = world.FindDroppedItemById(masked);
+                    if (obj != null)
                     {
-                        _logger.LogError(ex, "Error processing dropped item removal at idx {Idx}.", i);
+                        world.Objects.Remove(obj);
+                        obj.Recycle();
+                        _logger.LogDebug("Removed DroppedItemObject {Id:X4} from world (scope gone).", masked);
                     }
                 }
-
-                // Remove objects on main thread
-                MuGame.ScheduleOnMainThread(() =>
-                {
-                    if (MuGame.Instance.ActiveScene?.World is not WalkableWorldControl world) return;
-
-                    foreach (var masked in objectsToRemove)
-                    {
-                        var obj = world.FindDroppedItemById(masked);
-                        if (obj != null)
-                        {
-                            world.Objects.Remove(obj);
-                            obj.Recycle();
-                            _logger.LogDebug("Removed DroppedItemObject {Id:X4} from world (scope gone).", masked);
-                        }
-                    }
-                });
             });
         }
 
@@ -1280,53 +1387,75 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         {
             var outPkt = new MapObjectOutOfScope(packet);
             int count = outPkt.ObjectCount;
+            ushort selfId = (ushort)(_characterState.Id & 0x7FFF);
+            var objectsToRemove = new List<ushort>(count);
 
-            // Process removal asynchronously to avoid blocking
-            _ = Task.Run(() =>
+            for (int i = 0; i < count; i++)
             {
-                var objectsToRemove = new List<ushort>();
-                for (int i = 0; i < count; i++)
+                ushort raw = outPkt[i].Id;
+                ushort masked = (ushort)(raw & 0x7FFF);
+                if (masked == selfId && selfId != 0 && selfId != 0x7FFF)
                 {
-                    ushort raw = outPkt[i].Id;
-                    ushort masked = (ushort)(raw & 0x7FFF);
-                    objectsToRemove.Add(masked);
-                    _scopeManager.RemoveObjectFromScope(masked);
+                    _logger.LogDebug("Ignoring OutOfScope for local player ID {Id:X4}.", masked);
+                    continue;
                 }
 
-                // Remove objects on main thread in batches
-                MuGame.ScheduleOnMainThread(() =>
+                objectsToRemove.Add(masked);
+                _scopeManager.RemoveObjectFromScope(masked);
+            }
+
+            // Remove objects on main thread in one batched action.
+            MuGame.ScheduleOnMainThread(() =>
+            {
+                if (MuGame.Instance.ActiveScene?.World is not WalkableWorldControl world) return;
+                var localWalker = world.Walker;
+
+                foreach (var masked in objectsToRemove)
                 {
-                    if (MuGame.Instance.ActiveScene?.World is not WalkableWorldControl world) return;
-
-                    foreach (var masked in objectsToRemove)
+                    if (localWalker != null && localWalker.NetworkId == masked)
                     {
-                        // ---- 1) Player --------------------------------------------------
-                        var player = world.FindPlayerById(masked);
-                        if (player != null)
-                        {
-                            world.Objects.Remove(player);
-                            player.Dispose();
-                            continue;
-                        }
-
-                        // ---- 2) Walker / NPC --------------------------------------------
-                        var walker = world.FindWalkerById(masked);
-                        if (walker != null)
-                        {
-                            world.Objects.Remove(walker);
-                            walker.Dispose();
-                            continue;
-                        }
-
-                        // ---- 3) Dropped item --------------------------------------------
-                        var drop = world.FindDroppedItemById(masked);
-                        if (drop != null)
-                        {
-                            world.Objects.Remove(drop);
-                            drop.Dispose();
-                        }
+                        _logger.LogWarning("Skipping OutOfScope removal for local walker ID {Id:X4}.", masked);
+                        continue;
                     }
-                });
+
+                    // ---- 1) Player --------------------------------------------------
+                    var player = world.FindPlayerById(masked);
+                    if (player != null)
+                    {
+                        if (localWalker != null && ReferenceEquals(player, localWalker))
+                        {
+                            _logger.LogWarning("Skipping OutOfScope disposal for local player object ID {Id:X4}.", masked);
+                            continue;
+                        }
+
+                        world.Objects.Remove(player);
+                        player.Dispose();
+                        continue;
+                    }
+
+                    // ---- 2) Walker / NPC --------------------------------------------
+                    var walker = world.FindWalkerById(masked);
+                    if (walker != null)
+                    {
+                        if (localWalker != null && ReferenceEquals(walker, localWalker))
+                        {
+                            _logger.LogWarning("Skipping OutOfScope disposal for local walker object ID {Id:X4}.", masked);
+                            continue;
+                        }
+
+                        world.Objects.Remove(walker);
+                        walker.Dispose();
+                        continue;
+                    }
+
+                    // ---- 3) Dropped item --------------------------------------------
+                    var drop = world.FindDroppedItemById(masked);
+                    if (drop != null)
+                    {
+                        world.Objects.Remove(drop);
+                        drop.Dispose();
+                    }
+                }
             });
 
             return Task.CompletedTask;
@@ -1385,12 +1514,36 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         {
             if (packet.Length < 7) return Task.CompletedTask;
 
-            var walk = new ObjectWalked(packet);
-            ushort raw = walk.ObjectId;
-            ushort maskedId = (ushort)(raw & 0x7FFF);
-            byte x = walk.TargetX, y = walk.TargetY;
+            ushort raw;
+            ushort maskedId;
+            byte x, y;
+
+            if (_useExtendedWalkFormat && packet.Length >= ObjectWalkedExtended.GetRequiredSize(0))
+            {
+                // Server sends ObjectWalkedExtended for client versions >= 1.06.3 (e.g. 2.04d).
+                // Bytes [5-6] = SourceX/Y, [7-8] = TargetX/Y.
+                var walkExtended = new ObjectWalkedExtended(packet);
+                raw = walkExtended.ObjectId;
+                maskedId = (ushort)(raw & 0x7FFF);
+                x = walkExtended.TargetX;
+                y = walkExtended.TargetY;
+            }
+            else
+            {
+                // Server sends ObjectWalked for older client versions (e.g. 1.04d).
+                // Bytes [5-6] = TargetX/Y directly.
+                var walk = new ObjectWalked(packet);
+                raw = walk.ObjectId;
+                maskedId = (ushort)(raw & 0x7FFF);
+                x = walk.TargetX;
+                y = walk.TargetY;
+            }
 
             _scopeManager.TryUpdateScopeObjectPosition(maskedId, x, y);
+            if (maskedId == _characterState.Id)
+            {
+                _characterState.UpdatePosition(x, y);
+            }
 
             MuGame.ScheduleOnMainThread(() =>
             {
@@ -1407,7 +1560,14 @@ namespace Client.Main.Networking.PacketHandling.Handlers
 
                     if (self != null && self.NetworkId == maskedId)
                     {
-                        self.MoveTo(new Vector2(x, y), sendToServer: false);
+                        // Mirror SourceMain behavior: while local movement is in progress,
+                        // ignore delayed walk echoes from server to avoid "one-click-behind" movement.
+                        if (self.MovementIntent || self.IsMoving)
+                        {
+                            return;
+                        }
+
+                        self.MoveTo(new Vector2(x, y), sendToServer: false, usePathfinding: false);
                         return;
                     }
                 }
@@ -1418,7 +1578,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                     return;
                 }
 
-                walker.MoveTo(new Vector2(x, y), sendToServer: false);
+                walker.MoveTo(new Vector2(x, y), sendToServer: false, usePathfinding: false);
 
                 if (walker is PlayerObject player)
                 {
@@ -1654,7 +1814,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                     return;
                 }
 
-                Client.Main.Models.Direction clientDirection = (Client.Main.Models.Direction)serverDirection;
+                Client.Main.Models.Direction clientDirection = MapServerDirection(serverDirection);
 
                 if (maskedId == _characterState.Id && walker is PlayerObject localPlayer)
                 {
@@ -1733,6 +1893,44 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 _logger.LogError(ex, "Error parsing GuildMemberLeftGuild (0x5D).");
             }
             return Task.CompletedTask;
+        }
+
+        private void EnqueueDroppedItemProcessing(ScopeObject dropObj, ushort maskedId, string soundPath)
+        {
+            _droppedItemQueue.Enqueue(new DroppedItemWorkItem(dropObj, maskedId, soundPath));
+            TryStartDroppedItemWorker();
+        }
+
+        private void TryStartDroppedItemWorker()
+        {
+            if (Interlocked.CompareExchange(ref _droppedItemWorkerRunning, 1, 0) != 0)
+                return;
+
+            _ = ProcessDroppedItemQueueAsync();
+        }
+
+        private async Task ProcessDroppedItemQueueAsync()
+        {
+            try
+            {
+                while (_droppedItemQueue.TryDequeue(out var workItem))
+                {
+                    try
+                    {
+                        await ProcessDroppedItemAsync(workItem.DropObject, workItem.MaskedId, workItem.SoundPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing dropped item {Id:X4}", workItem.MaskedId);
+                    }
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _droppedItemWorkerRunning, 0);
+                if (!_droppedItemQueue.IsEmpty)
+                    TryStartDroppedItemWorker();
+            }
         }
 
         private async Task ProcessDroppedItemAsync(ScopeObject dropObj, ushort maskedId, string soundPath)

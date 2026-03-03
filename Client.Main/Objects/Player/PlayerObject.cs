@@ -210,7 +210,6 @@ namespace Client.Main.Objects.Player
 
             // Enable mouse hover interactions so the name is shown
             Interactive = true;
-            BoundingBoxLocal = new BoundingBox(new Vector3(-40, -40, 0), new Vector3(40, 40, 120));
 
             Scale = 0.85f;
             AnimationSpeed = 25f;
@@ -281,10 +280,6 @@ namespace Client.Main.Objects.Player
             await base.Load();
 
             UpdateWorldBoundingBox();
-        }
-
-        protected override void BeforeUpdatePosition(GameTime gameTime)
-        {
         }
 
         private static bool IsMouseOverWorld(BaseScene scene)
@@ -875,9 +870,10 @@ namespace Client.Main.Objects.Player
             // This requires more sophisticated logic to determine the exact weapon model
             // based on item group, index, and potentially other flags.
             // For now, we'll use generic models if an item is equipped.
-            if (Appearance.LeftHandItemIndex != 255 && Appearance.LeftHandItemIndex != 0xFF)
+            short leftHandNumber = Appearance.LeftHandItemNumber;
+            if (leftHandNumber >= 0 && leftHandNumber != 0xFF)
             {
-                var leftHandDef = ItemDatabase.GetItemDefinition(Appearance.LeftHandItemGroup, Appearance.LeftHandItemIndex);
+                var leftHandDef = ItemDatabase.GetItemDefinition(Appearance.LeftHandItemGroup, leftHandNumber);
                 if (leftHandDef != null)
                 {
                     Weapon1.Model = await BMDLoader.Instance.Prepare(leftHandDef.TexturePath);
@@ -902,9 +898,10 @@ namespace Client.Main.Objects.Player
                 Weapon1.TexturePath = null;
             }
 
-            if (Appearance.RightHandItemIndex != 255 && Appearance.RightHandItemIndex != 0xFF)
+            short rightHandNumber = Appearance.RightHandItemNumber;
+            if (rightHandNumber >= 0 && rightHandNumber != 0xFF)
             {
-                var rightHandDef = ItemDatabase.GetItemDefinition(Appearance.RightHandItemGroup, Appearance.RightHandItemIndex);
+                var rightHandDef = ItemDatabase.GetItemDefinition(Appearance.RightHandItemGroup, rightHandNumber);
                 if (rightHandDef != null)
                 {
                     Weapon2.Model = await BMDLoader.Instance.Prepare(rightHandDef.TexturePath);
@@ -1318,7 +1315,8 @@ namespace Client.Main.Objects.Player
             SetActionSpeed(PlayerAction.PlayerSkillHell, 0.50f + magicSpeed2);
             SetActionSpeed(PlayerAction.PlayerRideSkill, 0.30f + magicSpeed2);
 
-            SetActionSpeed(PlayerAction.PlayerSkillHellBegin, 0.50f + magicSpeed2);
+            // Reference client applies an extra 0.5x multiplier to HELL_BEGIN playback.
+            SetActionSpeed(PlayerAction.PlayerSkillHellBegin, 0.25f + (magicSpeed2 * 0.5f));
             SetActionSpeed(PlayerAction.PlayerAttackStrike, 0.25f + attackSpeed1);
             SetActionSpeed(PlayerAction.PlayerAttackRideStrike, 0.20f + attackSpeed1);
             SetActionSpeed(PlayerAction.PlayerAttackRideHorseSword, 0.25f + attackSpeed1);
@@ -1426,6 +1424,11 @@ namespace Client.Main.Objects.Player
             UpdateWingAnimationSpeed();
         }
 
+        public override void Draw(GameTime gameTime)
+        {
+            base.Draw(gameTime);
+        }
+
         private void UpdateEquipmentAnimationStride()
         {
             int desiredStride = 1;
@@ -1464,15 +1467,15 @@ namespace Client.Main.Objects.Player
             bool isFlyingAction = CurrentAction == PlayerAction.PlayerFly ||
                                   CurrentAction == PlayerAction.PlayerFlyCrossbow;
 
-            float desiredSpeed = 0.25f;
+            float desiredSpeed = 7f;
 
             if (wingIndex == WingOfRuinIndex)
             {
-                desiredSpeed = 0.15f;
+                desiredSpeed *= 1.15f;
             }
             else if (isFlyingAction)
             {
-                desiredSpeed = wingIndex == WingOfStormIndex ? 0.5f : 1f;
+                desiredSpeed *= wingIndex == WingOfStormIndex ? 1.5f : 2.5f;
             }
 
             if (Math.Abs(desiredSpeed - _lastWingAnimationSpeed) > 0.0001f)
@@ -2970,10 +2973,15 @@ namespace Client.Main.Objects.Player
                 return;
             }
 
+            if (IsMoving)
+                return;
+
             if (IsAttackOrSkillAnimationPlaying())
                 return;
 
             _currentPath?.Clear();
+            _currentPath = null;
+            _movementIntent = false;
 
             // Rotate to face the target
             int dx = (int)(target.Location.X - Location.X);
@@ -3015,6 +3023,8 @@ namespace Client.Main.Objects.Player
                 return;
 
             _currentPath?.Clear();
+            _currentPath = null;
+            _movementIntent = false;
 
             int dx = (int)(target.Location.X - Location.X);
             int dy = (int)(target.Location.Y - Location.Y);
@@ -3075,7 +3085,7 @@ namespace Client.Main.Objects.Player
 
                 MuGame.ScheduleOnMainThread(() =>
                 {
-                    ApplyPathOnMainThread(path, sendToServer: true, world);
+                    ApplyPathOnMainThread(path, sendToServer: true, world, start, 0);
                 });
             });
         }
@@ -3533,10 +3543,10 @@ namespace Client.Main.Objects.Player
             var pixel = GraphicsManager.Instance.Pixel;
             using (new SpriteBatchScope(
                        sb,
-                       SpriteSortMode.BackToFront,
+                       SpriteSortMode.Deferred,
                        BlendState.NonPremultiplied,
                        SamplerState.PointClamp,
-                       DepthStencilState.DepthRead))
+                       DepthStencilState.None))
             {
                 sb.Draw(pixel, bgRect, Color.Black * 0.6f);
                 sb.Draw(pixel, fillRect, Color.Red);
@@ -3562,19 +3572,19 @@ namespace Client.Main.Objects.Player
             base.OnLocationChanged(oldLocation, newLocation);
             if (IsMainWalker)
             {
-                CheckForGateEntry((int)newLocation.X, (int)newLocation.Y);
+                CheckForGateEntry((byte)newLocation.X, (byte)newLocation.Y);
             }
         }
 
-        private void CheckForGateEntry(int x, int y)
+        private void CheckForGateEntry(byte x, byte y)
         {
             if (World == null) return;
-            var gate = GateDataManager.Instance.GetGate((int)World.MapId, x, y);
-            if (gate != null && gate.Flag != 0)
+            var teleport = GateDataManager.Instance.GetTeleport((byte)World.MapId, x, y);
+            if (teleport != null)
             {
                 var charState = MuGame.Network.GetCharacterState();
-                if (charState.Level >= gate.Level)
-                    _characterService?.SendEnterGateRequestAsync((ushort)gate.Id);
+                if (charState.Level >= teleport.Source.Level)
+                    _characterService?.SendEnterGateRequestAsync(teleport.Index);
             }
         }
 
@@ -3737,16 +3747,16 @@ namespace Client.Main.Objects.Player
             path = NormalizePlayerPath(TryGetItemPath(11, Appearance.BootsItemIndex));
             if (path != null) yield return path;
 
-            if (Appearance.LeftHandItemIndex != 0xFF && Appearance.LeftHandItemIndex != 255)
+            if (Appearance.LeftHandItemNumber >= 0 && Appearance.LeftHandItemNumber != 0xFF)
             {
-                var leftHandDef = ItemDatabase.GetItemDefinition(Appearance.LeftHandItemGroup, Appearance.LeftHandItemIndex);
+                var leftHandDef = ItemDatabase.GetItemDefinition(Appearance.LeftHandItemGroup, Appearance.LeftHandItemNumber);
                 if (!string.IsNullOrWhiteSpace(leftHandDef?.TexturePath))
                     yield return leftHandDef.TexturePath;
             }
 
-            if (Appearance.RightHandItemIndex != 0xFF && Appearance.RightHandItemIndex != 255)
+            if (Appearance.RightHandItemNumber >= 0 && Appearance.RightHandItemNumber != 0xFF)
             {
-                var rightHandDef = ItemDatabase.GetItemDefinition(Appearance.RightHandItemGroup, Appearance.RightHandItemIndex);
+                var rightHandDef = ItemDatabase.GetItemDefinition(Appearance.RightHandItemGroup, Appearance.RightHandItemNumber);
                 if (!string.IsNullOrWhiteSpace(rightHandDef?.TexturePath))
                     yield return rightHandDef.TexturePath;
             }
@@ -3773,6 +3783,12 @@ namespace Client.Main.Objects.Player
             if (!wingAppearance.HasWings)
             {
                 return null;
+            }
+
+            // Extended appearance format carries the exact wing item index.
+            if (wingAppearance.ItemIndex >= 0)
+            {
+                return wingAppearance.ItemIndex;
             }
 
             // Dark Lord / Lord Emperor use cape models; Cape of Lord is encoded specially in S6 appearance.
@@ -3853,27 +3869,6 @@ namespace Client.Main.Objects.Player
             part.ItemLevel = itemDetails.Level;
             part.IsExcellentItem = itemDetails.IsExcellent;
             part.IsAncientItem = itemDetails.IsAncient;
-        }
-
-        protected override void UpdateWorldBoundingBox()
-        {
-            base.UpdateWorldBoundingBox();
-
-            Vector3 min = BoundingBoxWorld.Min;
-            Vector3 max = BoundingBoxWorld.Max;
-
-            for (int i = 0; i < Children.Count; i++)
-            {
-                var child = Children[i];
-                if (child is ModelObject modelChild && modelChild.Visible && modelChild.Model != null)
-                {
-                    var childBox = modelChild.BoundingBoxWorld;
-                    min = Vector3.Min(min, childBox.Min);
-                    max = Vector3.Max(max, childBox.Max);
-                }
-            }
-
-            BoundingBoxWorld = new BoundingBox(min, max);
         }
 
         /// <summary>

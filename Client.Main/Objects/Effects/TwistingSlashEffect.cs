@@ -17,7 +17,7 @@ namespace Client.Main.Objects.Effects
     /// Twisting Slash visual effect: rotating slash arcs, sparks, and dynamic lighting.
     /// Inspired by original MU wheel skill visuals.
     /// </summary>
-    public sealed class TwistingSlashEffect : WorldObject
+    public sealed class TwistingSlashEffect : EffectObject
     {
         private const string SlashTexturePath = "Effect/flare01.jpg";
         private const string GlowTexturePath = "Effect/flare.jpg";
@@ -95,9 +95,13 @@ namespace Client.Main.Objects.Effects
                 new Vector3(-220f, -220f, -40f),
                 new Vector3(220f, 220f, 220f));
 
+            _center = _caster.WorldPosition.Translation + new Vector3(0f, 0f, 55f);
+            _orbitPosition = _center + new Vector3(_orbitRadius, 0f, 0f);
+
             _centerLight = new DynamicLight
             {
                 Owner = this,
+                Position = _center,
                 Color = new Vector3(1.0f, 0.6f, 0.25f),
                 Radius = 260f,
                 Intensity = 1.25f
@@ -106,6 +110,7 @@ namespace Client.Main.Objects.Effects
             _orbitLight = new DynamicLight
             {
                 Owner = this,
+                Position = _orbitPosition,
                 Color = new Vector3(1.0f, 0.7f, 0.35f),
                 Radius = 180f,
                 Intensity = 1.4f
@@ -182,8 +187,6 @@ namespace Client.Main.Objects.Effects
             base.Update(gameTime);
             if (Status != GameControlStatus.Ready)
                 return;
-
-            ForceInView();
 
             if (_caster == null || _caster.Status == GameControlStatus.Disposed || _caster.World == null)
             {
@@ -366,9 +369,6 @@ namespace Client.Main.Objects.Effects
 
         private void UpdateDynamicLights()
         {
-            if (World?.Terrain == null)
-                return;
-
             float lifeAlpha = MathHelper.Clamp(_remaining / _duration, 0f, 1f);
             float pulse = 0.7f + 0.3f * MathF.Sin(_time * 12f);
 

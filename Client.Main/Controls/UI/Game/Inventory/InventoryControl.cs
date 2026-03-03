@@ -1216,10 +1216,7 @@ namespace Client.Main.Controls.UI.Game.Inventory
                     ?? new ItemDefinition(0, ItemDatabase.GetItemName(itemData) ?? "Unknown Item", 1, 1, defaultItemIconTexturePath);
 
                 var invItem = new InventoryItem(itemDef, Point.Zero, itemData);
-                if (itemData.Length > 2)
-                {
-                    invItem.Durability = itemData[2];
-                }
+                invItem.Durability = ItemDatabase.GetItemDurability(itemData);
 
                 _equippedItems[slotIndex] = invItem;
             }
@@ -1255,10 +1252,7 @@ namespace Client.Main.Controls.UI.Game.Inventory
 
                 InventoryItem newItem = new(itemDef, new Point(gridX, gridY), itemData);
 
-                if (itemData.Length > 2)
-                {
-                    newItem.Durability = itemData[2];
-                }
+                newItem.Durability = ItemDatabase.GetItemDurability(itemData);
 
                 if (!AddItem(newItem))
                 {
@@ -2695,44 +2689,6 @@ namespace Client.Main.Controls.UI.Game.Inventory
                     isFirstLine = false;
                 }
             }
-        }
-
-        private static void DrawStackCount(SpriteBatch spriteBatch, SpriteFont font, Rectangle itemRect, string quantityText)
-        {
-            const float textScale = 0.4f;
-
-            Vector2 textSize = font.MeasureString(quantityText);
-            Vector2 scaledSize = textSize * textScale;
-            Vector2 textPosition = new(itemRect.Right - scaledSize.X - 2, itemRect.Y + 2);
-
-            Color outlineColor = Color.Black;
-            for (int dx = -1; dx <= 1; dx++)
-            {
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    if (dx == 0 && dy == 0)
-                    {
-                        continue;
-                    }
-
-                    spriteBatch.DrawString(font, quantityText, textPosition + new Vector2(dx, dy), outlineColor, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
-                }
-            }
-
-            spriteBatch.DrawString(font, quantityText, textPosition, new Color(255, 255, 180), 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
-        }
-
-        private bool IsSlotOccupiedByItem(Point slot, InventoryItem item)
-        {
-            if (slot.X < 0 || slot.Y < 0 || slot.X >= Columns || slot.Y >= Rows || item?.Definition == null)
-            {
-                return false;
-            }
-
-            return slot.X >= item.GridPosition.X &&
-                   slot.X < item.GridPosition.X + item.Definition.Width &&
-                   slot.Y >= item.GridPosition.Y &&
-                   slot.Y < item.GridPosition.Y + item.Definition.Height;
         }
 
         private Rectangle Translate(Rectangle rect)

@@ -17,7 +17,7 @@ namespace Client.Main.Objects.Effects
     /// Scroll of Ice Storm visual effect (Skill ID 39) using Blizzard models.
     /// Creates 10 cascading falling ice shards with particle trails and ground debris.
     /// </summary>
-    public sealed class ScrollOfIceStormEffect : WorldObject
+    public sealed class ScrollOfIceStormEffect : EffectObject
     {
         private const string BlizzardBaseName = "Blizzard";
         private const string IceStoneBaseName = "ice_stone0";
@@ -60,6 +60,7 @@ namespace Client.Main.Objects.Effects
             _impactLight = new DynamicLight
             {
                 Owner = this,
+                Position = center,
                 Color = new Vector3(0.4f, 0.6f, 1.0f),
                 Radius = 275f,
                 Intensity = 1.1f
@@ -87,8 +88,6 @@ namespace Client.Main.Objects.Effects
 
             if (Status != GameControlStatus.Ready)
                 return;
-
-            ForceInView();
 
             if (_caster.Status == GameControlStatus.Disposed || _caster.World == null)
             {
@@ -205,9 +204,6 @@ namespace Client.Main.Objects.Effects
 
         private void UpdateDynamicLight(float dt)
         {
-            if (World?.Terrain == null)
-                return;
-
             _time += dt;
 
             float pulse = 0.8f + 0.2f * MathF.Sin(_time * 8f);

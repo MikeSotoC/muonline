@@ -1,3 +1,12 @@
+using Client.Main.Controllers;
+using Client.Main.Controls.UI;
+using Client.Main.Core.Utilities;
+using Client.Main.Data;
+using Client.Main.Helpers;
+using Client.Main.Models;
+using Client.Main.Worlds;
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
 using System;
 using System.Buffers;
 using System.Collections.Concurrent;
@@ -11,13 +20,6 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
-using Client.Main.Controllers;
-using Client.Main.Controls.UI;
-using Client.Main.Helpers;
-using Client.Main.Models;
-using Client.Main.Worlds;
-using Microsoft.Xna.Framework;
-using Microsoft.Xna.Framework.Graphics;
 
 namespace Client.Main.Scenes
 {
@@ -46,17 +48,7 @@ namespace Client.Main.Scenes
 
         #region Platform Detection
 
-        private static bool IsAndroid =>
-#if ANDROID
-            true;
-#else
-            RuntimeInformation.IsOSPlatform(OSPlatform.Create("ANDROID"));
-#endif
-
-        private static bool IsDesktop =>
-            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ||
-            RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ||
-            RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
+        private static bool IsAndroid => OperatingSystem.IsAndroid();
 
         #endregion
 
@@ -248,6 +240,9 @@ namespace Client.Main.Scenes
                     await DownloadAndExtractAssetsAsync(localZip, extractPath, ct);
                 }
 
+                await GateDataManager.Instance.LoadData();
+                await SkillDatabase.Initialize();
+
                 await TransitionToNextSceneAsync(ct);
             }
             catch (OperationCanceledException)
@@ -265,7 +260,10 @@ namespace Client.Main.Scenes
 
         private async Task DownloadAndExtractAssetsAsync(string localZip, string extractPath, CancellationToken ct)
         {
-            string[] urls = { _dataPathUrl, Constants.DefaultDataPathUrl };
+            string[] urls = { 
+            //    _dataPathUrl, 
+                Constants.DefaultDataPathUrl
+            };
             Exception lastError = null;
 
             foreach (var url in urls.Where(u => !string.IsNullOrEmpty(u)))
@@ -325,13 +323,14 @@ namespace Client.Main.Scenes
 
         private async Task TransitionToNextSceneAsync(CancellationToken ct)
         {
-#if ANDROID
-            Type nextSceneType = typeof(ServerConfigScene);
-#else
-            Type nextSceneType = Constants.ENTRY_SCENE == typeof(LoadScene)
-                ? typeof(LoginScene)
-                : Constants.ENTRY_SCENE;
-#endif
+            Type nextSceneType;
+
+            if (OperatingSystem.IsAndroid())
+                nextSceneType = typeof(ServerConfigScene);
+            else
+                nextSceneType = Constants.ENTRY_SCENE == typeof(LoadScene)
+                    ? typeof(LoginScene)
+                    : Constants.ENTRY_SCENE;
 
             UpdateProgress(p =>
             {
@@ -845,11 +844,17 @@ namespace Client.Main.Scenes
         {
             if (Status == GameControlStatus.NonInitialized)
                 _ = Initialize();
+
+            if (Status != GameControlStatus.Ready || !Visible) return;
+
             base.Update(gameTime);
         }
 
         public override void Draw(GameTime gameTime)
         {
+            if (Status != GameControlStatus.Ready || !Visible)
+                return;
+
             GraphicsDevice.Clear(new Color(12, 12, 20));
             DrawBackground();
             var progress = GetProgress();

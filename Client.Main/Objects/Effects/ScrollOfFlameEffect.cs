@@ -17,7 +17,7 @@ namespace Client.Main.Objects.Effects
     /// Flame (Scroll of Flame) effect - cylindrical fire wall with volumetric flames.
     /// Combines cylinder structure with organic rising fire particles.
     /// </summary>
-    public sealed class ScrollOfFlameEffect : WorldObject
+    public sealed class ScrollOfFlameEffect : EffectObject
     {
         private const ushort FlameSkillId = 5;
 
@@ -145,6 +145,7 @@ namespace Client.Main.Objects.Effects
             _flameLight = new DynamicLight
             {
                 Owner = this,
+                Position = _center + new Vector3(0f, 0f, CylinderHeight * 0.25f),
                 Color = new Vector3(1f, 0.35f, 0.08f), // red light
                 Radius = 280f,
                 Intensity = 2.0f
@@ -153,6 +154,7 @@ namespace Client.Main.Objects.Effects
             _topLight = new DynamicLight
             {
                 Owner = this,
+                Position = _center + new Vector3(0f, 0f, CylinderHeight * 0.7f),
                 Color = new Vector3(1f, 0.4f, 0.1f), // red light
                 Radius = 180f,
                 Intensity = 1.2f
@@ -226,8 +228,6 @@ namespace Client.Main.Objects.Effects
 
             if (Status != GameControlStatus.Ready)
                 return;
-
-            ForceInView();
 
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _time += dt;
@@ -646,9 +646,6 @@ namespace Client.Main.Objects.Effects
 
         private void UpdateDynamicLights()
         {
-            if (World?.Terrain == null)
-                return;
-
             float alpha = GetEffectAlpha();
             float flicker = 0.8f + 0.2f * MathF.Sin(_time * 22f);
 
