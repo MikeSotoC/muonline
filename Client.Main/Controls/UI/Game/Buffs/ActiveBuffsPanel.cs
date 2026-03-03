@@ -1,5 +1,4 @@
 #nullable enable
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using Client.Main.Core.Client;
@@ -66,7 +65,10 @@ namespace Client.Main.Controls.UI.Game.Buffs
 
         private void UpdateBuffDisplay()
         {
-            var activeBuffs = _characterState.GetActiveBuffs().Take(MAX_VISIBLE_BUFFS).ToList();
+            var activeBuffs = _characterState.GetActiveBuffs()
+                .Where(b => BuffIconAtlas.ShouldRender(b.EffectId))
+                .Take(MAX_VISIBLE_BUFFS)
+                .ToList();
 
             // Update each slot
             for (int i = 0; i < _buffSlots.Count; i++)
