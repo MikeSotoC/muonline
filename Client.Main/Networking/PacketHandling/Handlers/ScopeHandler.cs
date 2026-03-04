@@ -42,6 +42,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         private readonly TargetProtocolVersion _targetVersion;
         private readonly ILoggerFactory _loggerFactory;
         private readonly bool _useExtendedWalkFormat;
+        private readonly bool _useExtendedCharacterScopeFormat;
         private readonly Dictionary<byte, byte> _serverToClientDirMap;
 
         private static readonly List<NpcScopeObject> _pendingNpcsMonsters = new List<NpcScopeObject>();
@@ -77,11 +78,17 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             _targetVersion = targetVersion;
             _loggerFactory = loggerFactory;
             _activeInstance = this;
+            int clientVersionMajorMinor = ParseClientVersionMajorMinor(settings.ClientVersion);
 
             // Determine if server sends ObjectWalkedExtended based on client version.
             // OpenMU uses [MinimumClient(106, 3)] for Extended format (version >= 1.06.3).
             _useExtendedWalkFormat = targetVersion >= TargetProtocolVersion.Season6
-                                    && ParseClientVersionMajorMinor(settings.ClientVersion) >= 107;
+                                    && clientVersionMajorMinor >= 107;
+
+            // Open Source client 2.04d (mapped by OpenMU to client 106.3) uses the extended single-character
+            // scope packet layout for code 0x12.
+            _useExtendedCharacterScopeFormat = targetVersion >= TargetProtocolVersion.Season6
+                                            && clientVersionMajorMinor >= 204;
 
             // Build server→client direction map (inverse of the client→server DirectionMap).
             _serverToClientDirMap = new Dictionary<byte, byte>();
@@ -94,8 +101,11 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 }
             }
 
-            _logger.LogInformation("ScopeHandler: UseExtendedWalkFormat={Extended}, ServerToClientDirMap entries={Count}",
-                _useExtendedWalkFormat, _serverToClientDirMap.Count);
+            _logger.LogInformation(
+                "ScopeHandler: UseExtendedWalkFormat={ExtendedWalk}, UseExtendedCharacterScopeFormat={ExtendedScope}, ServerToClientDirMap entries={Count}",
+                _useExtendedWalkFormat,
+                _useExtendedCharacterScopeFormat,
+                _serverToClientDirMap.Count);
         }
 
         /// <summary>
@@ -267,62 +277,184 @@ namespace Client.Main.Networking.PacketHandling.Handlers
 
         private void ParseAndAddCharactersToScope(Memory<byte> packet)
         {
-            var scope = new AddCharactersToScopeRef(packet.Span);
+            bool parsed = false;
 
-            for (int i = 0; i < scope.CharacterCount; i++)
+            if (_useExtendedCharacterScopeFormat)
             {
-                var c = scope[i];
-                ushort raw = c.Id;
-                ushort masked = (ushort)(raw & 0x7FFF);
-                var cls = ClassFromAppearance(c.Appearance);
-
-                // Capture any active effects from the packet
-                if (c.EffectCount > 0)
+                parsed = TryParseExtendedCharacterScopePacket(packet);
+                if (!parsed)
                 {
-                    for (int e = 0; e < c.EffectCount; e++)
+                    _logger.LogWarning("Failed to parse extended AddCharacterToScope packet. Falling back to legacy parser.");
+                }
+            }
+
+            if (!parsed)
+            {
+                parsed = TryParseLegacyCharactersScopePacket(packet);
+            }
+
+            if (!parsed && _targetVersion >= TargetProtocolVersion.Season6 && !_useExtendedCharacterScopeFormat)
+            {
+                parsed = TryParseExtendedCharacterScopePacket(packet);
+                if (parsed)
+                {
+                    _logger.LogInformation("Parsed AddCharacterToScope packet using extended fallback.");
+                }
+            }
+
+            if (!parsed)
+            {
+                _logger.LogWarning("Failed to parse AddCharacterToScope packet (0x12). Length={Length}", packet.Length);
+            }
+        }
+
+        private bool TryParseLegacyCharactersScopePacket(Memory<byte> packet)
+        {
+            try
+            {
+                var scope = new AddCharactersToScopeRef(packet.Span);
+
+                for (int i = 0; i < scope.CharacterCount; i++)
+                {
+                    var c = scope[i];
+                    ushort raw = c.Id;
+
+                    if (c.EffectCount > 0)
                     {
-                        byte effectId = c[e].Id;
+                        for (int e = 0; e < c.EffectCount; e++)
+                        {
+                            byte effectId = c[e].Id;
+                            _characterState.ActivateBuff(effectId, raw);
+                            ElfBuffEffectManager.Instance?.HandleBuff(effectId, raw, true);
+                        }
+                    }
+
+                    UpsertAndSpawnRemotePlayer(
+                        raw,
+                        c.CurrentPositionX,
+                        c.CurrentPositionY,
+                        c.Name,
+                        ClassFromStandardAppearance(c.Appearance),
+                        c.Appearance);
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Legacy AddCharactersToScope parse failed.");
+                return false;
+            }
+        }
+
+        private bool TryParseExtendedCharacterScopePacket(Memory<byte> packet)
+        {
+            try
+            {
+                var character = new AddCharacterToScopeExtended(packet);
+                ushort raw = character.Id;
+                var appearanceAndEffects = character.AppearanceAndEffects;
+
+                const int extendedAppearanceLength = 27;
+                int appearanceLength = Math.Min(extendedAppearanceLength, appearanceAndEffects.Length);
+                var appearance = appearanceAndEffects.Slice(0, appearanceLength);
+
+                if (appearanceAndEffects.Length > extendedAppearanceLength)
+                {
+                    int effectCount = appearanceAndEffects[extendedAppearanceLength];
+                    int maxEffects = Math.Min(effectCount, appearanceAndEffects.Length - (extendedAppearanceLength + 1));
+                    for (int i = 0; i < maxEffects; i++)
+                    {
+                        byte effectId = appearanceAndEffects[extendedAppearanceLength + 1 + i];
                         _characterState.ActivateBuff(effectId, raw);
                         ElfBuffEffectManager.Instance?.HandleBuff(effectId, raw, true);
                     }
                 }
 
-                // Always update the manager, even for the local player
-                _scopeManager.AddOrUpdatePlayerInScope(masked, raw, c.CurrentPositionX, c.CurrentPositionY, c.Name);
+                UpsertAndSpawnRemotePlayer(
+                    raw,
+                    character.CurrentPositionX,
+                    character.CurrentPositionY,
+                    character.Name,
+                    ClassFromExtendedAppearance(appearance),
+                    appearance);
 
-                // Spawn remote players immediately if the world is ready,
-                // otherwise buffer for later
-                if (MuGame.Instance.ActiveScene?.World is WalkableWorldControl w
-                    && w.Status == GameControlStatus.Ready)
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Extended AddCharacterToScope parse failed.");
+                return false;
+            }
+        }
+
+        private void UpsertAndSpawnRemotePlayer(
+            ushort rawId,
+            byte x,
+            byte y,
+            string name,
+            CharacterClassNumber cls,
+            ReadOnlySpan<byte> appearance)
+        {
+            ushort maskedId = (ushort)(rawId & 0x7FFF);
+
+            // Always update the manager, even for the local player.
+            _scopeManager.AddOrUpdatePlayerInScope(maskedId, rawId, x, y, name);
+
+            if (maskedId == _characterState.Id)
+            {
+                return;
+            }
+
+            var appearanceBytes = appearance.ToArray();
+
+            // Spawn remote players immediately if the world is ready, otherwise buffer for later.
+            if (MuGame.Instance.ActiveScene?.World is WalkableWorldControl w
+                && w.Status == GameControlStatus.Ready)
+            {
+                SpawnRemotePlayerIntoWorld(w, maskedId, rawId, x, y, name, cls, appearanceBytes);
+                return;
+            }
+
+            lock (_pendingPlayers)
+            {
+                if (_pendingPlayerIds.Add(maskedId))
                 {
-                    if (masked != _characterState.Id) // Don't spawn self as a remote player
-                    {
-                        SpawnRemotePlayerIntoWorld(w, masked, raw, c.CurrentPositionX, c.CurrentPositionY, c.Name, cls, c.Appearance.ToArray());
-                    }
-                }
-                else if (masked != _characterState.Id)
-                {
-                    lock (_pendingPlayers)
-                    {
-                        if (_pendingPlayerIds.Add(masked))
-                        {
-                            _pendingPlayers.Add(new PlayerScopeObject(masked, raw, c.CurrentPositionX, c.CurrentPositionY, c.Name, cls, c.Appearance.ToArray()));
-                        }
-                    }
+                    _pendingPlayers.Add(new PlayerScopeObject(maskedId, rawId, x, y, name, cls, appearanceBytes));
                 }
             }
         }
 
-        private static CharacterClassNumber ClassFromAppearance(ReadOnlySpan<byte> app)
+        private static CharacterClassNumber ClassFromStandardAppearance(ReadOnlySpan<byte> app)
         {
             if (app.Length == 0) return CharacterClassNumber.DarkWizard;
-            int raw = (app[0] >> 3) & 0b1_1111;
-            return raw switch
+            return MapClassValueToEnum((app[0] >> 3) & 0b1_1111);
+        }
+
+        private static CharacterClassNumber ClassFromExtendedAppearance(ReadOnlySpan<byte> app)
+        {
+            if (app.Length == 0) return CharacterClassNumber.DarkWizard;
+
+            int direct = app[0];
+            if (IsKnownServerClassValue(direct))
             {
-                0 or 2 or 3 or 4 or 6 or 7 or 8 or 10 or 11 or 12 or 13 or
-                16 or 17 or 20 or 22 or 23 or 24 or 25 => (CharacterClassNumber)raw,
-                _ => CharacterClassNumber.DarkWizard
-            };
+                return MapClassValueToEnum(direct);
+            }
+
+            return MapClassValueToEnum((app[0] >> 3) & 0b1_1111);
+        }
+
+        private static CharacterClassNumber MapClassValueToEnum(int value)
+        {
+            return IsKnownServerClassValue(value)
+                ? (CharacterClassNumber)value
+                : CharacterClassNumber.DarkWizard;
+        }
+
+        private static bool IsKnownServerClassValue(int value)
+        {
+            return value is 0 or 2 or 3 or 4 or 6 or 7 or 8 or 10 or 11 or 12 or 13 or
+                16 or 17 or 20 or 22 or 23 or 24 or 25;
         }
 
         private void SpawnRemotePlayerIntoWorld(
