@@ -36,7 +36,7 @@ namespace Client.Main.Scenes
     {
         // ──────────────────────────── Fields ────────────────────────────
         private readonly HeroObject _hero;
-        private readonly MainControl _main;
+        private ModernBottomHud _modernHud;
         private GameSceneMapController _mapController;
         private MapListControl _mapListControl;
         private ChatLogWindow _chatLog;
@@ -52,7 +52,7 @@ namespace Client.Main.Scenes
         private double _pingTimer = 0;
         private int? _lastPingValue = null;
         private PauseMenuControl _pauseMenu; // ESC menu
-        private Controls.UI.Game.Skills.SkillQuickSlot _skillQuickSlot; // Skill quick slot
+        // (SkillQuickSlot removed — replaced by ModernBottomHud)
         private Controls.UI.Game.Skills.SkillSelectionPanel _skillSelectionPanel; // Skill selection panel (independent)
         private CurrentLocationControl _currentLocationControl; // Current map + coordinates (top-left)
         private ActiveBuffsPanel _activeBuffsPanel; // Active buffs display (top-left corner)
@@ -110,8 +110,7 @@ namespace Client.Main.Scenes
             // Create the hero with the appearance data from the character list
             _hero = new HeroObject(new AppearanceData(characterInfo.Appearance));
 
-            _main = new MainControl(characterState);
-            Controls.Add(_main);
+            // ModernBottomHud is created after _skillSelectionPanel below
             Controls.Add(NpcShopControl.Instance);
             Controls.Add(VaultControl.Instance);
             Controls.Add(ChaosMixControl.Instance);
@@ -185,16 +184,11 @@ namespace Client.Main.Scenes
             _skillSelectionPanel = new Controls.UI.Game.Skills.SkillSelectionPanel();
             Controls.Add(_skillSelectionPanel);
 
-            // Skill quick slot
-            _skillQuickSlot = new Controls.UI.Game.Skills.SkillQuickSlot(characterState);
-            _skillQuickSlot.SetSelectionPanel(_skillSelectionPanel); // Connect panel
-            Controls.Add(_skillQuickSlot);
-            _skillQuickSlot.BringToFront();
-            _skillController = new GameSceneSkillController(this, _skillQuickSlot, _logger, _duelController.IsDuelAttackTarget);
-
-            // Experience bar
-            var experienceBar = new ExperienceBarControl(characterState);
-            Controls.Add(experienceBar);
+            // Modern bottom HUD (replaces MainControl + SkillQuickSlot + ExperienceBar)
+            _modernHud = new ModernBottomHud(characterState, _skillSelectionPanel);
+            Controls.Add(_modernHud);
+            _modernHud.BringToFront();
+            _skillController = new GameSceneSkillController(this, _modernHud, _logger, _duelController.IsDuelAttackTarget);
 
             // Current location panel (top-left)
             _currentLocationControl = new CurrentLocationControl(characterState);
@@ -243,7 +237,7 @@ namespace Client.Main.Scenes
             Controls.Add(_progressBar);
             _mapController = new GameSceneMapController(
                 this,
-                _main,
+                _modernHud,
                 _progressBar,
                 _chatLog,
                 _chatInput,
@@ -305,7 +299,7 @@ namespace Client.Main.Scenes
                 {
                     UpdateLoadProgress("Error: CharacterState is null.", 1.0f);
                     _logger?.LogDebug("CharacterState is null in GameScene.Load, cannot proceed.");
-                    _main.Visible = false;
+                    _modernHud.Visible = false;
                     return;
                 }
 
@@ -440,7 +434,7 @@ namespace Client.Main.Scenes
 
                 // Finalize
                 _mapController?.UpdateLoadProgress("Game ready!", 1.0f);
-                _main.Visible = true;
+                _modernHud.Visible = true;
                 _mapController?.UpdateMapName();
             }
             finally

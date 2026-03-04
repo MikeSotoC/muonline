@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Client.Data.ATT;
 using Client.Main.Controls;
+using Client.Main.Controls.UI.Game.Hud;
 using Client.Main.Controls.UI.Game.Skills;
 using Client.Main.Core.Utilities;
 using Client.Main.Objects;
@@ -24,7 +25,7 @@ namespace Client.Main.Scenes
         private const ushort NovaStartSkillId = 58;
 
         private readonly GameScene _scene;
-        private readonly SkillQuickSlot _skillQuickSlot;
+        private readonly ModernBottomHud _hud;
         private readonly ILogger _logger;
         private readonly Func<PlayerObject, bool> _isDuelAttackTarget;
 
@@ -41,12 +42,12 @@ namespace Client.Main.Scenes
 
         public GameSceneSkillController(
             GameScene scene,
-            SkillQuickSlot skillQuickSlot,
+            ModernBottomHud hud,
             ILogger logger,
             Func<PlayerObject, bool> isDuelAttackTarget)
         {
             _scene = scene ?? throw new ArgumentNullException(nameof(scene));
-            _skillQuickSlot = skillQuickSlot ?? throw new ArgumentNullException(nameof(skillQuickSlot));
+            _hud = hud ?? throw new ArgumentNullException(nameof(hud));
             _logger = logger;
             _isDuelAttackTarget = isDuelAttackTarget ?? (_ => false);
         }
@@ -89,7 +90,7 @@ namespace Client.Main.Scenes
             bool rightJustReleased = !rightPressed && prevMouse.RightButton == ButtonState.Pressed;
             bool leftJustPressed = mouse.LeftButton == ButtonState.Pressed && prevMouse.LeftButton == ButtonState.Released;
 
-            var skill = _skillQuickSlot.SelectedSkill;
+            var skill = _hud.SelectedSkill;
             var hero = _scene.Hero;
             var walkableForSkills = _scene.World as WalkableWorldControl;
 
@@ -219,7 +220,7 @@ namespace Client.Main.Scenes
                 return;
             }
 
-            var selectedSkill = _skillQuickSlot.SelectedSkill;
+            var selectedSkill = _hud.SelectedSkill;
             if (selectedSkill?.SkillId == NovaSkillId)
                 return;
 
@@ -444,7 +445,7 @@ namespace Client.Main.Scenes
                 return;
             }
 
-            if (_skillQuickSlot.SelectedSkill == null || _skillQuickSlot.SelectedSkill.SkillId != _pendingSkill.SkillId)
+            if (_hud.SelectedSkill == null || _hud.SelectedSkill.SkillId != _pendingSkill.SkillId)
             {
                 ClearPendingSkill();
                 return;
