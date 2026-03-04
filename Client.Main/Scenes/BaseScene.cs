@@ -389,14 +389,9 @@ namespace Client.Main.Scenes
                 return true;
             }
 
-            if (control.BackgroundColor.A > 0 || control.BorderThickness > 0)
-            {
-                return true;
-            }
-
-            // Leaf visual controls (labels/sprites/textures) should block click-through.
-            // Non-interactive containers with only children (e.g. layout roots) should not.
-            return control.Controls.Count == 0;
+            // Non-interactive controls are click-through by default.
+            // Controls which must still block pointer (rare overlays) can opt-in explicitly.
+            return control.CapturePointerWhenNonInteractive;
         }
 
         public override void Draw(GameTime gameTime)

@@ -37,6 +37,7 @@ namespace Client.Main.Scenes
         // ──────────────────────────── Fields ────────────────────────────
         private readonly HeroObject _hero;
         private ModernBottomHud _modernHud;
+        private EquipmentDurabilityHud _equipmentDurabilityHud;
         private GameSceneMapController _mapController;
         private MapListControl _mapListControl;
         private ChatLogWindow _chatLog;
@@ -188,6 +189,10 @@ namespace Client.Main.Scenes
             _modernHud = new ModernBottomHud(characterState, _skillSelectionPanel);
             Controls.Add(_modernHud);
             _modernHud.BringToFront();
+
+            // Right-side low durability warnings (reference: item endurance icons)
+            _equipmentDurabilityHud = new EquipmentDurabilityHud(characterState);
+            Controls.Add(_equipmentDurabilityHud);
             _skillController = new GameSceneSkillController(this, _modernHud, _logger, _duelController.IsDuelAttackTarget);
 
             // Current location panel (top-left)
