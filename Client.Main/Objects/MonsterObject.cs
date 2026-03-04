@@ -271,6 +271,13 @@ namespace Client.Main.Objects
             if (IsDead || !Visible)
                 return;
 
+            // Show monster labels only when hovered or when HP bar is available.
+            // This matches expected clutter reduction while still keeping combat readability.
+            bool showByHover = Constants.SHOW_NAMES_ON_HOVER && IsMouseHover;
+            bool showByHealth = _hasHealthFraction;
+            if (!showByHover && !showByHealth)
+                return;
+
             var font = GraphicsManager.Instance.Font;
             if (font == null)
                 return;
