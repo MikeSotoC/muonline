@@ -1116,6 +1116,155 @@ namespace Client.Main
             }
         }
 
+        public static bool TryLoadQuickSlotAssignments(
+            string characterName,
+            out int activeSkillSlot,
+            out ushort?[] skillSlots,
+            out (byte Group, int Id)?[] potionSlots)
+        {
+            activeSkillSlot = 3;
+            skillSlots = new ushort?[13];
+            potionSlots = new (byte Group, int Id)?[3];
+
+            string key = NormalizeQuickSlotCharacterKey(characterName);
+            if (key == null)
+            {
+                return false;
+            }
+
+            var logger = AppLoggerFactory?.CreateLogger<MuGame>();
+            try
+            {
+                JsonObject root = LoadLocalSettings(logger);
+                if (root["MuOnlineSettings"] is not JsonObject muSettings ||
+                    muSettings["Ui"] is not JsonObject uiSettings ||
+                    uiSettings["QuickSlots"] is not JsonObject quickSlots ||
+                    quickSlots[key] is not JsonObject characterSlots)
+                {
+                    return false;
+                }
+
+                if (characterSlots["ActiveSkillSlot"] is JsonValue activeValue &&
+                    activeValue.TryGetValue(out int loadedActive))
+                {
+                    activeSkillSlot = loadedActive;
+                }
+
+                if (characterSlots["Skills"] is JsonArray skillsArray)
+                {
+                    for (int i = 0; i < Math.Min(skillSlots.Length, skillsArray.Count); i++)
+                    {
+                        if (skillsArray[i] is JsonValue skillValue &&
+                            skillValue.TryGetValue(out ushort skillId))
+                        {
+                            skillSlots[i] = skillId;
+                        }
+                    }
+                }
+
+                if (characterSlots["Potions"] is JsonArray potionsArray)
+                {
+                    for (int i = 0; i < Math.Min(potionSlots.Length, potionsArray.Count); i++)
+                    {
+                        if (potionsArray[i] is not JsonObject potionObject)
+                            continue;
+
+                        if (potionObject["Group"] is JsonValue groupValue &&
+                            potionObject["Id"] is JsonValue idValue &&
+                            groupValue.TryGetValue(out byte group) &&
+                            idValue.TryGetValue(out int id))
+                        {
+                            potionSlots[i] = (group, id);
+                        }
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Failed to load quick slot assignments for character {CharacterName}.", characterName);
+                return false;
+            }
+        }
+
+        public static void PersistQuickSlotAssignments(
+            string characterName,
+            int activeSkillSlot,
+            IReadOnlyList<ushort?> skillSlots,
+            IReadOnlyList<(byte Group, int Id)?> potionSlots)
+        {
+            string key = NormalizeQuickSlotCharacterKey(characterName);
+            if (key == null)
+            {
+                return;
+            }
+
+            var logger = AppLoggerFactory?.CreateLogger<MuGame>();
+            try
+            {
+                Directory.CreateDirectory(ConfigDirectory ?? AppContext.BaseDirectory);
+
+                JsonObject root = LoadLocalSettings(logger);
+                if (root["MuOnlineSettings"] is not JsonObject muSettings)
+                {
+                    muSettings = new JsonObject();
+                    root["MuOnlineSettings"] = muSettings;
+                }
+
+                if (muSettings["Ui"] is not JsonObject uiSettings)
+                {
+                    uiSettings = new JsonObject();
+                    muSettings["Ui"] = uiSettings;
+                }
+
+                if (uiSettings["QuickSlots"] is not JsonObject quickSlots)
+                {
+                    quickSlots = new JsonObject();
+                    uiSettings["QuickSlots"] = quickSlots;
+                }
+
+                var skillsArray = new JsonArray();
+                for (int i = 0; i < skillSlots.Count; i++)
+                {
+                    skillsArray.Add(skillSlots[i].HasValue ? JsonValue.Create(skillSlots[i]!.Value) : null);
+                }
+
+                var potionsArray = new JsonArray();
+                for (int i = 0; i < potionSlots.Count; i++)
+                {
+                    var potion = potionSlots[i];
+                    if (!potion.HasValue)
+                    {
+                        potionsArray.Add(null);
+                        continue;
+                    }
+
+                    potionsArray.Add(new JsonObject
+                    {
+                        ["Group"] = potion.Value.Group,
+                        ["Id"] = potion.Value.Id
+                    });
+                }
+
+                quickSlots[key] = new JsonObject
+                {
+                    ["CharacterName"] = characterName.Trim(),
+                    ["ActiveSkillSlot"] = activeSkillSlot,
+                    ["Skills"] = skillsArray,
+                    ["Potions"] = potionsArray
+                };
+
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                File.WriteAllText(LocalSettingsPath, root.ToJsonString(options));
+                logger?.LogInformation("Saved quick slot assignments for {CharacterName} to {Path}", characterName, LocalSettingsPath);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Failed to persist quick slot assignments for character {CharacterName}.", characterName);
+            }
+        }
+
         public static void PersistGraphicsPreset(GraphicsQualityPreset preset)
         {
             var logger = AppLoggerFactory?.CreateLogger<MuGame>();
@@ -1267,6 +1416,17 @@ namespace Client.Main
                 logger?.LogWarning(ex, "Failed to read existing local settings; recreating file.");
                 return new JsonObject();
             }
+        }
+
+        private static string NormalizeQuickSlotCharacterKey(string characterName)
+        {
+            string trimmed = characterName?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed) || trimmed == "???")
+            {
+                return null;
+            }
+
+            return trimmed.ToUpperInvariant();
         }
 
         /// <summary>

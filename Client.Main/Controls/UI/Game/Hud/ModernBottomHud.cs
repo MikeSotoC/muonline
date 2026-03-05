@@ -84,6 +84,7 @@ namespace Client.Main.Controls.UI.Game.Hud
         private readonly SkillEntryState?[] _slotSkills = new SkillEntryState?[SlotCount];
         private int _activeSkillSlot = 3;
         private int _pendingAssignSlot = -1;
+        private bool _quickSlotsRestored;
 
         // Potion slot assignments (Q=0, W=1, E=2) — stores item type
         private readonly (byte Group, int Id)?[] _potionAssignments = new (byte, int)?[PotionSlotCount];
@@ -133,12 +134,6 @@ namespace Client.Main.Controls.UI.Game.Hud
 
             _skillPanel.SkillSelected += OnSkillSelectedFromPanel;
 
-            var defaultSkill = _state.GetSkills().FirstOrDefault();
-            if (defaultSkill != null)
-            {
-                _slotSkills[3] = defaultSkill;
-            }
-
             RefreshLayout();
         }
 
@@ -152,6 +147,7 @@ namespace Client.Main.Controls.UI.Game.Hud
         {
             base.Update(gameTime);
             RefreshLayout();
+            RestoreQuickSlotsIfNeeded();
 
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _totalTime = gameTime.TotalGameTime.TotalSeconds;
@@ -299,6 +295,7 @@ namespace Client.Main.Controls.UI.Game.Hud
                 if (kb.IsKeyDown(SlotKeys[i]) && !prev.IsKeyDown(SlotKeys[i]))
                 {
                     _activeSkillSlot = i;
+                    PersistQuickSlots();
                 }
             }
 
@@ -371,6 +368,7 @@ namespace Client.Main.Controls.UI.Game.Hud
                     {
                         var candidate = _potionCandidates[i];
                         _potionAssignments[_potionPickerSlot] = (candidate.Group, candidate.Id);
+                        PersistQuickSlots();
                         SoundController.Instance.PlayBuffer("Sound/iButtonClick.wav");
                     }
                     _potionPickerOpen = false;
@@ -423,6 +421,99 @@ namespace Client.Main.Controls.UI.Game.Hud
             _slotSkills[targetSlot] = skill;
             _activeSkillSlot = targetSlot;
             _pendingAssignSlot = -1;
+            PersistQuickSlots();
+        }
+
+        private void RestoreQuickSlotsIfNeeded()
+        {
+            if (_quickSlotsRestored)
+                return;
+
+            string? characterName = GetPersistentCharacterName();
+            if (string.IsNullOrWhiteSpace(characterName))
+                return;
+
+            var learnedSkills = _state.GetSkills().ToDictionary(skill => skill.SkillId);
+            if (learnedSkills.Count == 0)
+                return;
+
+            if (MuGame.TryLoadQuickSlotAssignments(characterName, out int activeSkillSlot, out ushort?[] savedSkillSlots, out (byte Group, int Id)?[] savedPotionSlots))
+            {
+                for (int i = PotionSlotCount; i < Math.Min(SlotCount, savedSkillSlots.Length); i++)
+                {
+                    ushort? skillId = savedSkillSlots[i];
+                    if (skillId.HasValue && learnedSkills.TryGetValue(skillId.Value, out var skill))
+                    {
+                        _slotSkills[i] = skill;
+                    }
+                }
+
+                for (int i = 0; i < Math.Min(PotionSlotCount, savedPotionSlots.Length); i++)
+                {
+                    _potionAssignments[i] = savedPotionSlots[i];
+                }
+
+                if (activeSkillSlot >= PotionSlotCount && activeSkillSlot < SlotCount)
+                {
+                    _activeSkillSlot = activeSkillSlot;
+                }
+            }
+
+            EnsureActiveSkillSelection(learnedSkills.Values.FirstOrDefault());
+            _quickSlotsRestored = true;
+        }
+
+        private void EnsureActiveSkillSelection(SkillEntryState? fallbackSkill)
+        {
+            if (_slotSkills[3] == null && fallbackSkill != null)
+            {
+                _slotSkills[3] = fallbackSkill;
+            }
+
+            if (_activeSkillSlot >= PotionSlotCount &&
+                _activeSkillSlot < SlotCount &&
+                _slotSkills[_activeSkillSlot] != null)
+            {
+                return;
+            }
+
+            for (int i = PotionSlotCount; i < SlotCount; i++)
+            {
+                if (_slotSkills[i] != null)
+                {
+                    _activeSkillSlot = i;
+                    return;
+                }
+            }
+
+            _activeSkillSlot = 3;
+        }
+
+        private void PersistQuickSlots()
+        {
+            if (!_quickSlotsRestored)
+                return;
+
+            string? characterName = GetPersistentCharacterName();
+            if (string.IsNullOrWhiteSpace(characterName))
+                return;
+
+            ushort?[] skillIds = new ushort?[SlotCount];
+            for (int i = PotionSlotCount; i < SlotCount; i++)
+            {
+                skillIds[i] = _slotSkills[i]?.SkillId;
+            }
+
+            MuGame.PersistQuickSlotAssignments(characterName, _activeSkillSlot, skillIds, _potionAssignments);
+        }
+
+        private string? GetPersistentCharacterName()
+        {
+            string? name = _state.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(name) || name == "???")
+                return null;
+
+            return name;
         }
 
         private void OnButtonClicked(int index)
@@ -542,20 +633,22 @@ namespace Client.Main.Controls.UI.Game.Hud
                 (slotsAreaW - fixedGaps) / SlotCount,
                 innerH); // don't exceed panel height
             slotSize = Math.Max(slotSize, 30); // minimum
+            int slotWidth = Math.Max(28, slotSize - 4);
+            int slotHeight = Math.Min(innerH, slotSize + 4);
 
-            int totalSlotW = SlotCount * slotSize + fixedGaps;
+            int totalSlotW = SlotCount * slotWidth + fixedGaps;
             int slotsAreaLeft = contentLeft + barW + barSlotGap;
             int slotsAreaRight = contentRight - barW - barSlotGap;
             int actualSlotsW = slotsAreaRight - slotsAreaLeft;
             int slotStartX = slotsAreaLeft + (actualSlotsW - totalSlotW) / 2;
-            int slotY = panelY + (panelH - slotSize) / 2;
+            int slotY = panelY + (panelH - slotHeight) / 2;
 
             _slotRects = new Rectangle[SlotCount];
             int sx = slotStartX;
             for (int i = 0; i < SlotCount; i++)
             {
-                _slotRects[i] = new Rectangle(sx, slotY, slotSize, slotSize);
-                sx += slotSize + slotGap;
+                _slotRects[i] = new Rectangle(sx, slotY, slotWidth, slotHeight);
+                sx += slotWidth + slotGap;
                 if (i == PotionSlotCount - 1) sx += potionGap;
             }
 
@@ -1006,8 +1099,21 @@ namespace Client.Main.Controls.UI.Game.Hud
                 return;
 
             int pad = 3;
-            var iconDest = new Rectangle(dest.X + pad, dest.Y + pad,
+            var iconBounds = new Rectangle(dest.X + pad, dest.Y + pad,
                 Math.Max(1, dest.Width - pad * 2), Math.Max(1, dest.Height - pad * 2));
+
+            float fitScale = MathF.Min(
+                iconBounds.Width / (float)SkillIconAtlas.IconWidth,
+                iconBounds.Height / (float)SkillIconAtlas.IconHeight);
+
+            int drawW = Math.Max(1, (int)MathF.Round(SkillIconAtlas.IconWidth * fitScale));
+            int drawH = Math.Max(1, (int)MathF.Round(SkillIconAtlas.IconHeight * fitScale));
+
+            var iconDest = new Rectangle(
+                iconBounds.X + (iconBounds.Width - drawW) / 2,
+                iconBounds.Y + (iconBounds.Height - drawH) / 2,
+                drawW,
+                drawH);
             sb.Draw(tex, iconDest, frame.SourceRectangle, Color.White);
         }
 

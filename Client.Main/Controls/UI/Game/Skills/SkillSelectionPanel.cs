@@ -200,7 +200,8 @@ namespace Client.Main.Controls.UI.Game.Skills
                     X = slotsStartX + (col * (slotWidth + SLOT_GAP)),
                     Y = slotsStartY + (row * (slotHeight + SLOT_GAP)),
                     Scale = _slotScale,
-                    IsTooltipEnabled = false
+                    IsTooltipEnabled = false,
+                    ShowFooter = false
                 };
 
                 slot.Click += (sender, args) => OnSkillSlotClicked(slot);
@@ -225,10 +226,8 @@ namespace Client.Main.Controls.UI.Game.Skills
             {
                 HighlightSkill(_selectedSkillId.Value);
             }
-            else
-            {
-                UpdateDetail(skills.FirstOrDefault());
-            }
+
+            UpdateDetail(null);
 
             Visible = true;
             BringToFront();
@@ -474,25 +473,11 @@ namespace Client.Main.Controls.UI.Game.Skills
                 }
             }
 
-            UpdateDetail(selected);
         }
 
         private void OnSkillSlotHover(SkillEntryState? skill)
         {
-            if (!_selectedSkillId.HasValue)
-            {
-                UpdateDetail(skill);
-                return;
-            }
-
-            if (skill != null)
-            {
-                UpdateDetail(skill);
-                return;
-            }
-
-            var selectedSlot = _skillSlots.FirstOrDefault(s => s.Skill?.SkillId == _selectedSkillId);
-            UpdateDetail(selectedSlot?.Skill);
+            UpdateDetail(skill);
         }
 
         private void UpdateDetail(SkillEntryState? skill)
@@ -517,7 +502,7 @@ namespace Client.Main.Controls.UI.Game.Skills
             };
 
             _detailNameLabel.Text = SkillDatabase.GetSkillName(skill.SkillId);
-            _detailTypeLabel.Text = $"Type: {typeText}  •  Level {skill.SkillLevel}";
+            _detailTypeLabel.Text = $"Type: {typeText}  |  Level {skill.SkillLevel}";
 
             var sb = new StringBuilder();
             sb.AppendLine($"Skill ID: {skill.SkillId}");

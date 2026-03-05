@@ -54,6 +54,7 @@ namespace Client.Main.Controls.UI.Game.Skills
         }
 
         public bool IsTooltipEnabled { get; set; } = true;
+        public bool ShowFooter { get; set; } = true;
 
         public event Action<SkillEntryState?>? HoverChanged;
 
@@ -104,7 +105,10 @@ namespace Client.Main.Controls.UI.Game.Skills
             DrawSlotFrame(spriteBatch, pixel, rect, gameTime);
             DrawIconArea(spriteBatch, pixel, rect);
             DrawSkillIcon(spriteBatch, rect);
-            DrawFooter(spriteBatch, pixel, rect);
+            if (ShowFooter)
+            {
+                DrawFooter(spriteBatch, pixel, rect);
+            }
         }
 
         public override void DrawAfter(GameTime gameTime)
@@ -258,7 +262,7 @@ namespace Client.Main.Controls.UI.Game.Skills
 
         private void DrawIconArea(SpriteBatch spriteBatch, Texture2D pixel, Rectangle rect)
         {
-            Rectangle iconArea = GetIconAreaRect(rect);
+            Rectangle iconArea = GetIconAreaRect(rect, ShowFooter);
 
             UiDrawHelper.DrawVerticalGradient(
                 spriteBatch,
@@ -274,11 +278,11 @@ namespace Client.Main.Controls.UI.Game.Skills
 
         private void DrawSkillIcon(SpriteBatch spriteBatch, Rectangle rect)
         {
-            Rectangle iconArea = GetIconAreaRect(rect);
+            Rectangle iconArea = GetIconAreaRect(rect, ShowFooter);
             var font = GraphicsManager.Instance.Font;
             if (_skill == null)
             {
-                if (font != null)
+                if (font != null && ShowFooter)
                 {
                     float baseScale = rect.Height / (float)SLOT_HEIGHT;
                     float textScale = 0.34f * baseScale;
@@ -397,17 +401,17 @@ namespace Client.Main.Controls.UI.Game.Skills
             DrawCenteredText(spriteBatch, font, text, inner, ModernHudTheme.TextWhite * Alpha, textScale);
         }
 
-        private static Rectangle GetIconAreaRect(Rectangle rect)
+        private static Rectangle GetIconAreaRect(Rectangle rect, bool showFooter)
         {
             int xPad = Math.Max(2, rect.Width / 10);
             int yPad = Math.Max(2, rect.Height / 16);
-            int footerHeight = Math.Max(8, rect.Height / 5);
+            int footerHeight = showFooter ? Math.Max(8, rect.Height / 5) : 0;
 
             return new Rectangle(
                 rect.X + xPad,
                 rect.Y + yPad,
                 Math.Max(1, rect.Width - (xPad * 2)),
-                Math.Max(1, rect.Height - yPad - footerHeight - 1));
+                Math.Max(1, rect.Height - yPad - footerHeight - (showFooter ? 1 : yPad)));
         }
 
         private static Rectangle GetFooterRect(Rectangle rect)
