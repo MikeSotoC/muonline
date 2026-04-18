@@ -29,6 +29,7 @@ using Client.Main.Controls.UI.Game.Hud;
 using MUnique.OpenMU.Network.Packets;
 using Client.Main.Controllers;
 using Client.Main.Helpers;
+using System.Threading.Tasks;
 
 namespace Client.Main.Scenes
 {
@@ -69,6 +70,7 @@ namespace Client.Main.Scenes
         private GameSceneChatController _chatController;
         private GameSceneUiPreloadController _uiPreloadController;
         private GameSceneWindowCloseController _windowCloseController;
+        private Controls.UI.Mobile.MobileControlsOverlay _mobileControls;
 
         // Performance optimization fields - track object IDs for O(1) lookups
         // ───────────────────────── Properties ─────────────────────────
@@ -255,6 +257,11 @@ namespace Client.Main.Scenes
             _chatController = new GameSceneChatController(_mapController, _duelController, _chatLog, _logger);
             _chatInput.MessageSendRequested += _chatController.OnChatMessageSendRequested;
             _uiPreloadController = new GameSceneUiPreloadController(this, _logger);
+
+            // Initialize mobile controls overlay (Android/iOS)
+            _mobileControls = new Controls.UI.Mobile.MobileControlsOverlay();
+            Controls.Add(_mobileControls);
+            _mobileControls.BringToFront();
 
             // Start pre-loading common UI assets in background to prevent freezes
             // This runs async and won't block scene initialization
