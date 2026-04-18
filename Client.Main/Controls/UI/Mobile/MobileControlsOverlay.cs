@@ -1,15 +1,14 @@
-using Client.Main.Controls;
-using Client.Main.Controls.UI.Game.Skills;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input.Touch;
 using System;
-using System.Collections.Generic;
 
 namespace Client.Main.Controls.UI.Mobile
 {
     /// <summary>
     /// Mobile controls overlay that manages virtual joystick and buttons
     /// </summary>
-    public class MobileControlsOverlay : GameControl
+    public class MobileControlsOverlay
     {
         // Controls
         public VirtualJoystick MovementJoystick { get; private set; }
@@ -23,7 +22,7 @@ namespace Client.Main.Controls.UI.Mobile
         
         // Configuration
         public bool VisibleOnDesktop { get; set; } = false;
-        public float Opacity { get; set; } = 1f;
+        public bool Visible { get; set; } = true;
         
         // State
         public bool IsMobilePlatform => OperatingSystem.IsAndroid() || OperatingSystem.IsIOS();
@@ -41,14 +40,25 @@ namespace Client.Main.Controls.UI.Mobile
             new int[4] { 8, 9, 10, 11 } // Set C: last 4 skills
         };
         
+        private SpriteFont _font;
+        
         public MobileControlsOverlay()
         {
-            Interactive = true;
-            CapturePointerWhenNonInteractive = true;
-            Align = ControlAlign.None;
         }
         
-        public override async Task Load()
+        public void LoadContent(Microsoft.Xna.Framework.Content.ContentManager content)
+        {
+            try
+            {
+                _font = content.Load<SpriteFont>("Arial");
+            }
+            catch
+            {
+                // Font not found, will use default rendering without text
+            }
+        }
+        
+        public void Initialize(int screenWidth, int screenHeight)
         {
             if (!IsMobilePlatform && !VisibleOnDesktop)
             {
@@ -71,9 +81,8 @@ namespace Client.Main.Controls.UI.Mobile
             // Position joystick in bottom-left corner
             int joystickMargin = 60;
             int joystickX = joystickMargin;
-            int joystickY = MuGame.Instance.Height - joystickMargin - (int)(MovementJoystick.Radius * 2);
+            int joystickY = screenHeight - joystickMargin - (int)(MovementJoystick.Radius * 2);
             MovementJoystick.SetPosition(joystickX, joystickY);
-            Controls.Add(MovementJoystick);
             
             // Initialize attack button (bottom-right)
             AttackButton = new VirtualButton
@@ -87,10 +96,9 @@ namespace Client.Main.Controls.UI.Mobile
             int buttonMargin = 60;
             int buttonSpacing = 70;
             int skillButtonSize = 45;
-            int attackX = MuGame.Instance.Width - buttonMargin - (int)(AttackButton.Radius * 2);
-            int attackY = MuGame.Instance.Height - buttonMargin - (int)(AttackButton.Radius * 2);
+            int attackX = screenWidth - buttonMargin - (int)(AttackButton.Radius * 2);
+            int attackY = screenHeight - buttonMargin - (int)(AttackButton.Radius * 2);
             AttackButton.SetPosition(attackX, attackY);
-            Controls.Add(AttackButton);
             
             // Initialize 4 skill buttons in a 2x2 grid above the attack button
             SkillButton1 = new VirtualButton
@@ -104,7 +112,6 @@ namespace Client.Main.Controls.UI.Mobile
             int skill1X = attackX - buttonSpacing;
             int skill1Y = attackY - buttonSpacing / 2;
             SkillButton1.SetPosition(skill1X, skill1Y);
-            Controls.Add(SkillButton1);
             
             SkillButton2 = new VirtualButton
             {
@@ -117,7 +124,6 @@ namespace Client.Main.Controls.UI.Mobile
             int skill2X = attackX;
             int skill2Y = attackY - buttonSpacing / 2;
             SkillButton2.SetPosition(skill2X, skill2Y);
-            Controls.Add(SkillButton2);
             
             SkillButton3 = new VirtualButton
             {
@@ -130,7 +136,6 @@ namespace Client.Main.Controls.UI.Mobile
             int skill3X = attackX - buttonSpacing;
             int skill3Y = attackY - buttonSpacing / 2 - buttonSpacing;
             SkillButton3.SetPosition(skill3X, skill3Y);
-            Controls.Add(SkillButton3);
             
             SkillButton4 = new VirtualButton
             {
@@ -143,7 +148,6 @@ namespace Client.Main.Controls.UI.Mobile
             int skill4X = attackX;
             int skill4Y = attackY - buttonSpacing / 2 - buttonSpacing;
             SkillButton4.SetPosition(skill4X, skill4Y);
-            Controls.Add(SkillButton4);
             
             // Initialize skill swap button (above skill buttons, to change skill sets)
             SkillSwapButton = new VirtualButton
@@ -157,8 +161,6 @@ namespace Client.Main.Controls.UI.Mobile
             int swapX = attackX - buttonSpacing / 2;
             int swapY = skill3Y - 50;
             SkillSwapButton.SetPosition(swapX, swapY);
-            SkillSwapButton.Click += OnSkillSwapClicked;
-            Controls.Add(SkillSwapButton);
             
             // Initialize interact button (near joystick)
             InteractButton = new VirtualButton
@@ -173,68 +175,53 @@ namespace Client.Main.Controls.UI.Mobile
             int interactX = joystickMargin + (int)(MovementJoystick.Radius * 2) + 20;
             int interactY = joystickY + (int)(MovementJoystick.Radius) - (int)(InteractButton.Radius);
             InteractButton.SetPosition(interactX, interactY);
-            Controls.Add(InteractButton);
-            
-            await base.Load();
         }
         
-        private void OnSkillSwapClicked(object sender, EventArgs e)
+        public void Update(GameTime gameTime, TouchCollection touchState)
+        {
+            if (!Visible) return;
+            
+            MovementJoystick?.Update(touchState);
+            AttackButton?.Update(touchState, gameTime);
+            SkillButton1?.Update(touchState, gameTime);
+            SkillButton2?.Update(touchState, gameTime);
+            SkillButton3?.Update(touchState, gameTime);
+            SkillButton4?.Update(touchState, gameTime);
+            InteractButton?.Update(touchState, gameTime);
+            
+            // Handle skill swap button
+            if (SkillSwapButton != null)
+            {
+                SkillSwapButton.Update(touchState, gameTime);
+                if (SkillSwapButton.IsPressed && !_wasSwapPressed)
+                {
+                    OnSkillSwapClicked();
+                }
+                _wasSwapPressed = SkillSwapButton.IsPressed;
+            }
+        }
+        
+        private bool _wasSwapPressed = false;
+        
+        private void OnSkillSwapClicked()
         {
             // Cycle through skill sets: A -> B -> C -> A
             _currentSkillSetIndex = (_currentSkillSetIndex + 1) % MaxSkillSets;
             SkillSwapButton.Label = _skillSetLabels[_currentSkillSetIndex];
-            
-            // Update skill button labels to show current skill set
-            UpdateSkillButtonLabels();
         }
         
-        private void UpdateSkillButtonLabels()
-        {
-            // You could update the labels to show skill icons or names here
-            // For now, we just keep the numbers but they reference different skills
-            var currentSet = _skillSetAssignments[_currentSkillSetIndex];
-            SkillButton1.Label = "1";
-            SkillButton2.Label = "2";
-            SkillButton3.Label = "3";
-            SkillButton4.Label = "4";
-        }
-        
-        public override void Update(GameTime gameTime)
-        {
-            // Only update on mobile platforms or if explicitly enabled for desktop
-            if (!IsMobilePlatform && !VisibleOnDesktop)
-            {
-                Visible = false;
-                return;
-            }
-            
-            // Apply opacity to all child controls
-            foreach (var control in Controls)
-            {
-                if (control is VirtualJoystick joystick)
-                {
-                    // Joystick colors already have alpha, but we could modulate here if needed
-                }
-                else if (control is VirtualButton button)
-                {
-                    // Button colors already have alpha
-                }
-            }
-            
-            base.Update(gameTime);
-        }
-        
-        public override void Draw(GameTime gameTime)
+        public void Draw(SpriteBatch spriteBatch, Texture2D pixelTexture)
         {
             if (!Visible) return;
             
-            // Set overall opacity
-            float oldAlpha = Alpha;
-            Alpha = Opacity;
-            
-            base.Draw(gameTime);
-            
-            Alpha = oldAlpha;
+            MovementJoystick?.Draw(spriteBatch, pixelTexture);
+            AttackButton?.Draw(spriteBatch, pixelTexture, _font);
+            SkillButton1?.Draw(spriteBatch, pixelTexture, _font);
+            SkillButton2?.Draw(spriteBatch, pixelTexture, _font);
+            SkillButton3?.Draw(spriteBatch, pixelTexture, _font);
+            SkillButton4?.Draw(spriteBatch, pixelTexture, _font);
+            InteractButton?.Draw(spriteBatch, pixelTexture, _font);
+            SkillSwapButton?.Draw(spriteBatch, pixelTexture, _font);
         }
         
         /// <summary>

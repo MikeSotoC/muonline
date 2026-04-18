@@ -8,7 +8,7 @@ namespace Client.Main.Controls.UI.Mobile
     /// <summary>
     /// Virtual action button for mobile (attack, interact, skill, etc.)
     /// </summary>
-    public class VirtualButton : GameControl
+    public class VirtualButton
     {
         // Fields
         private int _touchId = -1;
@@ -21,6 +21,7 @@ namespace Client.Main.Controls.UI.Mobile
         public Color PressedColor { get; set; } = Color.White * 0.7f;
         public Color IconColor { get; set; } = Color.White;
         public string Label { get; set; } = "A";
+        public Vector2 Position { get; set; }
         
         // State
         public bool IsPressed => _isPressed;
@@ -35,39 +36,20 @@ namespace Client.Main.Controls.UI.Mobile
         
         public VirtualButton()
         {
-            Interactive = true;
-            CapturePointerWhenNonInteractive = true;
         }
         
         public void SetPosition(int x, int y)
         {
-            X = x;
-            Y = y;
-            ViewSize = new Point((int)(Radius * 2), (int)(Radius * 2));
+            Position = new Vector2(x, y);
         }
         
-        public override void Update(GameTime gameTime)
+        public void Update(TouchCollection touchState, GameTime gameTime)
         {
-            if (!Visible)
-            {
-                if (_isPressed)
-                {
-                    _isPressed = false;
-                    _touchId = -1;
-                    _pressTime = 0f;
-                    Released?.Invoke(this, EventArgs.Empty);
-                }
-                return;
-            }
-            
-            var touchState = MuGame.Instance.Touch;
             bool stillPressed = false;
             
             // Check for active touch on this button
-            for (int i = 0; i < touchState.Count; i++)
+            foreach (var touch in touchState)
             {
-                var touch = touchState[i];
-                
                 // Find our touch or acquire new one
                 if (_touchId == -1 || touch.Id == _touchId)
                 {
@@ -76,20 +58,10 @@ namespace Client.Main.Controls.UI.Mobile
                     if (_touchId == -1)
                     {
                         // Try to acquire touch if it's within the button
-                        Rectangle buttonRect = new Rectangle(
-                            DisplayPosition.X,
-                            DisplayPosition.Y,
-                            DisplaySize.X,
-                            DisplaySize.Y);
+                        float distance = Vector2.Distance(touchPos, Position);
                         
                         // Expand hit area slightly for better usability
-                        Rectangle expandedRect = new Rectangle(
-                            buttonRect.X - 10,
-                            buttonRect.Y - 10,
-                            buttonRect.Width + 20,
-                            buttonRect.Height + 20);
-                        
-                        if (expandedRect.Contains((int)touchPos.X, (int)touchPos.Y))
+                        if (distance <= Radius + 10)
                         {
                             _touchId = touch.Id;
                             _isPressed = true;
@@ -125,9 +97,9 @@ namespace Client.Main.Controls.UI.Mobile
             if (_touchId != -1 && !stillPressed)
             {
                 bool found = false;
-                for (int i = 0; i < touchState.Count; i++)
+                foreach (var touch in touchState)
                 {
-                    if (touchState[i].Id == _touchId && touchState[i].State != TouchLocationState.Released)
+                    if (touch.Id == _touchId && touch.State != TouchLocationState.Released)
                     {
                         found = true;
                         break;
@@ -142,66 +114,54 @@ namespace Client.Main.Controls.UI.Mobile
                     Released?.Invoke(this, EventArgs.Empty);
                 }
             }
-            
-            base.Update(gameTime);
         }
         
-        public override void Draw(GameTime gameTime)
+        public void Draw(SpriteBatch spriteBatch, Texture2D pixelTexture, SpriteFont font)
         {
-            if (!Visible) return;
-            
-            SpriteBatch spriteBatch = GraphicsManager.Instance.Sprite;
-            
             // Draw button circle
             Color buttonColor = _isPressed ? PressedColor : BaseColor;
             
             // Draw outer circle
-            spriteBatch.Draw(
-                GraphicsManager.Instance.Pixel,
-                new Rectangle(
-                    DisplayPosition.X,
-                    DisplayPosition.Y,
-                    DisplaySize.X,
-                    DisplaySize.Y),
-                null,
-                buttonColor,
-                0f,
-                Vector2.Zero,
-                SpriteEffects.None,
-                0f);
+            DrawCircle(spriteBatch, Position, Radius, buttonColor, 32, pixelTexture);
             
             // Draw inner circle for visual feedback
             float innerRadius = Radius * 0.7f;
-            int innerSize = (int)(innerRadius * 2);
-            int innerX = DisplayPosition.X + (DisplaySize.X - innerSize) / 2;
-            int innerY = DisplayPosition.Y + (DisplaySize.Y - innerSize) / 2;
-            
-            spriteBatch.Draw(
-                GraphicsManager.Instance.Pixel,
-                new Rectangle(innerX, innerY, innerSize, innerSize),
-                null,
-                buttonColor * 1.5f,
-                0f,
-                Vector2.Zero,
-                SpriteEffects.None,
-                0f);
+            DrawCircle(spriteBatch, Position, innerRadius, buttonColor * 1.5f, 16, pixelTexture);
             
             // Draw label text if present
-            if (!string.IsNullOrEmpty(Label))
+            if (!string.IsNullOrEmpty(Label) && font != null)
             {
-                Vector2 textSize = GraphicsManager.Instance.Font.MeasureString(Label);
-                Vector2 textPos = new Vector2(
-                    DisplayPosition.X + (DisplaySize.X - textSize.X) / 2,
-                    DisplayPosition.Y + (DisplaySize.Y - textSize.Y) / 2);
+                Vector2 textSize = font.MeasureString(Label);
+                Vector2 textPos = Position - textSize / 2;
                 
-                spriteBatch.DrawString(
-                    GraphicsManager.Instance.Font,
-                    Label,
-                    textPos,
-                    IconColor);
+                spriteBatch.DrawString(font, Label, textPos, IconColor);
             }
-            
-            base.Draw(gameTime);
+        }
+        
+        private void DrawCircle(SpriteBatch spriteBatch, Vector2 center, float radius, Color color, int segments, Texture2D pixelTexture)
+        {
+            for (int i = 0; i < segments; i++)
+            {
+                float angle1 = (float)(i * 2 * Math.PI / segments);
+                float angle2 = (float)((i + 1) * 2 * Math.PI / segments);
+                
+                Vector2 point1 = center + new Vector2((float)Math.Cos(angle1), (float)Math.Sin(angle1)) * radius;
+                Vector2 point2 = center + new Vector2((float)Math.Cos(angle2), (float)Math.Sin(angle2)) * radius;
+                
+                float length = Vector2.Distance(point1, point2);
+                float angle = (float)Math.Atan2(point2.Y - point1.Y, point2.X - point1.X);
+                
+                spriteBatch.Draw(
+                    pixelTexture,
+                    point1,
+                    null,
+                    color,
+                    angle,
+                    new Vector2(0, 0.5f),
+                    new Vector2(length, 1f),
+                    SpriteEffects.None,
+                    0f);
+            }
         }
     }
     
