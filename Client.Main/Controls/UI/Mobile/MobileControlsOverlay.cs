@@ -1,6 +1,8 @@
 using Client.Main.Controls;
+using Client.Main.Controls.UI.Game.Skills;
 using Microsoft.Xna.Framework;
 using System;
+using System.Collections.Generic;
 
 namespace Client.Main.Controls.UI.Mobile
 {
@@ -14,7 +16,10 @@ namespace Client.Main.Controls.UI.Mobile
         public VirtualButton AttackButton { get; private set; }
         public VirtualButton SkillButton1 { get; private set; }
         public VirtualButton SkillButton2 { get; private set; }
+        public VirtualButton SkillButton3 { get; private set; }
+        public VirtualButton SkillButton4 { get; private set; }
         public VirtualButton InteractButton { get; private set; }
+        public VirtualButton SkillSwapButton { get; private set; } // Button to swap skill sets
         
         // Configuration
         public bool VisibleOnDesktop { get; set; } = false;
@@ -22,6 +27,19 @@ namespace Client.Main.Controls.UI.Mobile
         
         // State
         public bool IsMobilePlatform => OperatingSystem.IsAndroid() || OperatingSystem.IsIOS();
+        
+        // Skill configuration - allows switching between different skill sets
+        private int _currentSkillSetIndex = 0;
+        private const int MaxSkillSets = 3; // 3 sets of 4 skills each = 12 skills total
+        private readonly string[] _skillSetLabels = { "A", "B", "C" };
+        
+        // Currently selected skills for each button (indexes into the character's skill list)
+        private readonly int[][] _skillSetAssignments = new int[MaxSkillSets][]
+        {
+            new int[4] { 0, 1, 2, 3 }, // Set A: first 4 skills
+            new int[4] { 4, 5, 6, 7 }, // Set B: next 4 skills
+            new int[4] { 8, 9, 10, 11 } // Set C: last 4 skills
+        };
         
         public MobileControlsOverlay()
         {
@@ -67,41 +85,80 @@ namespace Client.Main.Controls.UI.Mobile
             };
             
             int buttonMargin = 60;
-            int buttonSpacing = 80;
+            int buttonSpacing = 70;
+            int skillButtonSize = 45;
             int attackX = MuGame.Instance.Width - buttonMargin - (int)(AttackButton.Radius * 2);
             int attackY = MuGame.Instance.Height - buttonMargin - (int)(AttackButton.Radius * 2);
             AttackButton.SetPosition(attackX, attackY);
             Controls.Add(AttackButton);
             
-            // Initialize skill button 1 (above attack)
+            // Initialize 4 skill buttons in a 2x2 grid above the attack button
             SkillButton1 = new VirtualButton
             {
-                Radius = 40f,
+                Radius = skillButtonSize / 2f,
                 Label = "1",
                 BaseColor = Color.Blue * 0.3f,
                 PressedColor = Color.Blue * 0.6f,
                 LongPressThreshold = 0.3f
             };
-            
             int skill1X = attackX - buttonSpacing;
             int skill1Y = attackY - buttonSpacing / 2;
             SkillButton1.SetPosition(skill1X, skill1Y);
             Controls.Add(SkillButton1);
             
-            // Initialize skill button 2 (above skill 1)
             SkillButton2 = new VirtualButton
             {
-                Radius = 40f,
+                Radius = skillButtonSize / 2f,
                 Label = "2",
                 BaseColor = Color.Purple * 0.3f,
                 PressedColor = Color.Purple * 0.6f,
                 LongPressThreshold = 0.3f
             };
-            
-            int skill2X = skill1X;
-            int skill2Y = skill1Y - buttonSpacing;
+            int skill2X = attackX;
+            int skill2Y = attackY - buttonSpacing / 2;
             SkillButton2.SetPosition(skill2X, skill2Y);
             Controls.Add(SkillButton2);
+            
+            SkillButton3 = new VirtualButton
+            {
+                Radius = skillButtonSize / 2f,
+                Label = "3",
+                BaseColor = Color.Green * 0.3f,
+                PressedColor = Color.Green * 0.6f,
+                LongPressThreshold = 0.3f
+            };
+            int skill3X = attackX - buttonSpacing;
+            int skill3Y = attackY - buttonSpacing / 2 - buttonSpacing;
+            SkillButton3.SetPosition(skill3X, skill3Y);
+            Controls.Add(SkillButton3);
+            
+            SkillButton4 = new VirtualButton
+            {
+                Radius = skillButtonSize / 2f,
+                Label = "4",
+                BaseColor = Color.Orange * 0.3f,
+                PressedColor = Color.Orange * 0.6f,
+                LongPressThreshold = 0.3f
+            };
+            int skill4X = attackX;
+            int skill4Y = attackY - buttonSpacing / 2 - buttonSpacing;
+            SkillButton4.SetPosition(skill4X, skill4Y);
+            Controls.Add(SkillButton4);
+            
+            // Initialize skill swap button (above skill buttons, to change skill sets)
+            SkillSwapButton = new VirtualButton
+            {
+                Radius = 30f,
+                Label = _skillSetLabels[_currentSkillSetIndex],
+                BaseColor = Color.Yellow * 0.3f,
+                PressedColor = Color.Yellow * 0.7f,
+                LongPressThreshold = 0.2f
+            };
+            int swapX = attackX - buttonSpacing / 2;
+            int swapY = skill3Y - 50;
+            SkillSwapButton.SetPosition(swapX, swapY);
+            SkillSwapButton.Click += OnSkillSwapClicked;
+            Controls.Add(SkillSwapButton);
             
             // Initialize interact button (near joystick)
             InteractButton = new VirtualButton
@@ -119,6 +176,27 @@ namespace Client.Main.Controls.UI.Mobile
             Controls.Add(InteractButton);
             
             await base.Load();
+        }
+        
+        private void OnSkillSwapClicked(object sender, EventArgs e)
+        {
+            // Cycle through skill sets: A -> B -> C -> A
+            _currentSkillSetIndex = (_currentSkillSetIndex + 1) % MaxSkillSets;
+            SkillSwapButton.Label = _skillSetLabels[_currentSkillSetIndex];
+            
+            // Update skill button labels to show current skill set
+            UpdateSkillButtonLabels();
+        }
+        
+        private void UpdateSkillButtonLabels()
+        {
+            // You could update the labels to show skill icons or names here
+            // For now, we just keep the numbers but they reference different skills
+            var currentSet = _skillSetAssignments[_currentSkillSetIndex];
+            SkillButton1.Label = "1";
+            SkillButton2.Label = "2";
+            SkillButton3.Label = "3";
+            SkillButton4.Label = "4";
         }
         
         public override void Update(GameTime gameTime)
@@ -187,8 +265,42 @@ namespace Client.Main.Controls.UI.Mobile
             {
                 1 => SkillButton1?.IsPressed ?? false,
                 2 => SkillButton2?.IsPressed ?? false,
+                3 => SkillButton3?.IsPressed ?? false,
+                4 => SkillButton4?.IsPressed ?? false,
                 _ => false
             };
+        }
+        
+        /// <summary>
+        /// Gets the currently active skill set index (0=A, 1=B, 2=C)
+        /// </summary>
+        public int GetCurrentSkillSetIndex()
+        {
+            return _currentSkillSetIndex;
+        }
+        
+        /// <summary>
+        /// Gets the skill index for a given skill button in the current set
+        /// </summary>
+        public int GetSkillIndexForButton(int buttonIndex)
+        {
+            if (buttonIndex < 1 || buttonIndex > 4)
+                return -1;
+            
+            return _skillSetAssignments[_currentSkillSetIndex][buttonIndex - 1];
+        }
+        
+        /// <summary>
+        /// Sets a custom skill assignment for a specific button in a specific set
+        /// </summary>
+        public void SetSkillAssignment(int skillSetIndex, int buttonIndex, int skillIndex)
+        {
+            if (skillSetIndex < 0 || skillSetIndex >= MaxSkillSets)
+                return;
+            if (buttonIndex < 0 || buttonIndex >= 4)
+                return;
+            
+            _skillSetAssignments[skillSetIndex][buttonIndex] = skillIndex;
         }
         
         /// <summary>
