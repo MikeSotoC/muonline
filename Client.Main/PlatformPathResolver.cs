@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Microsoft.Extensions.Configuration;
 
 namespace Client.Main
 {
@@ -92,14 +93,35 @@ namespace Client.Main
 
         /// <summary>
         /// URL base para descarga de datos (Data.zip).
-        /// Configurable según el servidor.
+        /// Configurable según el servidor desde appsettings.json.
         /// </summary>
-        public static string DataPathUrl { get; set; } = "http://192.168.55.220/Data.zip";
+        public static string DataPathUrl { get; set; } = string.Empty;
 
         /// <summary>
         /// URL por defecto para descarga de datos oficiales.
+        /// Configurable desde appsettings.json.
         /// </summary>
-        public static string DefaultDataPathUrl { get; set; } = "https://full-wkr.mu.webzen.co.kr/muweb/full/MU_Red_1_20_61_Full.zip";
+        public static string DefaultDataPathUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Inicializa las URLs de descarga desde la configuración.
+        /// Debe llamarse después de cargar appsettings.json.
+        /// </summary>
+        public static void InitializeFromConfiguration(IConfiguration configuration)
+        {
+            var dataDownloadSection = configuration?.GetSection("MuOnlineSettings:DataDownload");
+            if (dataDownloadSection?.Exists() == true)
+            {
+                DataPathUrl = dataDownloadSection["DataPathUrl"] ?? string.Empty;
+                DefaultDataPathUrl = dataDownloadSection["DefaultDataPathUrl"] ?? string.Empty;
+            }
+            else
+            {
+                // Valores por defecto si no hay configuración
+                DataPathUrl = "http://192.168.55.220/Data.zip";
+                DefaultDataPathUrl = "https://full-wkr.mu.webzen.co.kr/muweb/full/MU_Red_1_20_61_Full.zip";
+            }
+        }
 
         /// <summary>
         /// Inicializa todas las rutas según la plataforma.

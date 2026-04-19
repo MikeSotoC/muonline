@@ -1,7 +1,8 @@
-﻿using Client.Main;
+using Client.Main;
 
 #if DEBUG
-Constants.DataPath = @"C:\Games\MU_Red_1_20_61_Full\Data";
+// Opcional: Sobrescribir la ruta de datos para desarrollo
+// PlatformPathResolver.DataPathUrl = "http://tu-servidor-local/Data.zip";
 #endif
 
 using var game = new MuGame();

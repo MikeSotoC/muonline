@@ -259,8 +259,8 @@ namespace MuAndroid
 
                 _game = new Client.Main.MuGame();
 
-                if (!Directory.Exists(Client.Main.Constants.DataPath))
-                    Directory.CreateDirectory(Client.Main.Constants.DataPath);
+                if (!Directory.Exists(Client.Main.PlatformPathResolver.DataPath))
+                    Directory.CreateDirectory(Client.Main.PlatformPathResolver.DataPath);
 
                 _view = (View)_game.Services.GetService(typeof(View));
                 SetContentView(_view);
