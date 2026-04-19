@@ -185,11 +185,30 @@ namespace Client.Main
             return Math.Clamp(fps, MIN_PERFORMANCE_FPS_CAP, MAX_PERFORMANCE_FPS_CAP);
         }
 
-        // Paths
-        public static string DataPath;
-        public static string DataPathUrl = "http://192.168.55.220/Data.zip";
-        public static string DefaultDataPathUrl = "https://full-wkr.mu.webzen.co.kr/muweb/full/MU_Red_1_20_61_Full.zip";
-        public static string SETTINGS_PATH = "appsettings.json";
+        // Paths - Obsoletos, usar PlatformPathResolver en su lugar
+        [Obsolete("Use PlatformPathResolver.DataPath instead")]
+        public static string DataPath => PlatformPathResolver.DataPath;
+        
+        [Obsolete("Use PlatformPathResolver.DataPathUrl instead")]
+        public static string DataPathUrl 
+        { 
+            get => PlatformPathResolver.DataPathUrl; 
+            set => PlatformPathResolver.DataPathUrl = value; 
+        }
+        
+        [Obsolete("Use PlatformPathResolver.DefaultDataPathUrl instead")]
+        public static string DefaultDataPathUrl 
+        { 
+            get => PlatformPathResolver.DefaultDataPathUrl; 
+            set => PlatformPathResolver.DefaultDataPathUrl = value; 
+        }
+        
+        [Obsolete("Use PlatformPathResolver.ConfigDirectory instead")]
+        public static string SETTINGS_PATH 
+        { 
+            get => Path.GetFileName(PlatformPathResolver.GetConfigFilePath(\"appsettings.json\")); 
+            set { /* Mantenido por compatibilidad, pero no tiene efecto */ }
+        }
 
         public static float FOV_SCALE = 1f;
 
@@ -252,7 +271,7 @@ namespace Client.Main
             SHADOW_BIAS = 0.005f;
             SHADOW_NORMAL_BIAS = 0.008f;
 
-            DataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
+            DataPath = PlatformPathResolver.DataPath; // Inicializar desde PlatformPathResolver
         }
 
 #if DEBUG
