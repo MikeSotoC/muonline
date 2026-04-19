@@ -320,6 +320,9 @@ namespace Client.Main
                 .AddJsonFile(LocalSettingsFileName, optional: true, reloadOnChange: true)
                 .Build();
 
+            // Inicializar URLs de descarga desde la configuración
+            PlatformPathResolver.InitializeFromConfiguration(AppConfiguration);
+
             // --- Logging Setup ---
             AppLoggerFactory = LoggerFactory.Create(builder =>
             {

@@ -206,7 +206,7 @@ namespace Client.Main
         [Obsolete("Use PlatformPathResolver.ConfigDirectory instead")]
         public static string SETTINGS_PATH 
         { 
-            get => Path.GetFileName(PlatformPathResolver.GetConfigFilePath(\"appsettings.json\")); 
+            get => Path.Combine(PlatformPathResolver.ConfigDirectory, "appsettings.json");
             set { /* Mantenido por compatibilidad, pero no tiene efecto */ }
         }
 
@@ -270,8 +270,6 @@ namespace Client.Main
             SHADOW_FAR_PLANE = 6000f;
             SHADOW_BIAS = 0.005f;
             SHADOW_NORMAL_BIAS = 0.008f;
-
-            DataPath = PlatformPathResolver.DataPath; // Inicializar desde PlatformPathResolver
         }
 
 #if DEBUG
