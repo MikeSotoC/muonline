@@ -309,6 +309,9 @@ namespace Client.Main
 
         protected override void Initialize()
         {
+            // Inicializar PlatformPathResolver primero para asegurar rutas correctas por plataforma
+            _ = PlatformPathResolver.DataPath; // Forzar inicialización
+            
             (string configDirectory, string configFileName) = ResolveSettingsFileLocation();
             ConfigDirectory = configDirectory;
             AppConfiguration = new ConfigurationBuilder()
