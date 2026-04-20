@@ -14,6 +14,8 @@ namespace Client.Main.Objects.Player
             set { _playerClass = value; }
         }
 
+        public string TexturePath { get; set; }
+
         private new ILogger _logger = ModelObject.AppLoggerFactory?.CreateLogger<PlayerObject>();
 
         public async Task SetPlayerClassAsync(PlayerClass playerClass)
@@ -40,6 +42,9 @@ namespace Client.Main.Objects.Player
                 _logger?.LogDebug($"PlayerPantObject: Failed to load model for PlayerClass {(int)PlayerClass}. Path: Player/PantClass{(int)PlayerClass:D2}.bmd");
                 Status = GameControlStatus.Error;
             }
+
+            // Store the texture path for rendering
+            TexturePath = $"Player/PantClass{(int)PlayerClass:D2}.bmd";
         }
     }
 }

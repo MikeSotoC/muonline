@@ -1,7 +1,7 @@
 // GameScene.cs
-using Client.Main.Controls;
 using Client.Main.Controls.UI;
 using Client.Main.Controls.UI.Game;
+using Client.Main.Controls.UI.Game.Mobile;
 using Client.Main.Models;
 using Client.Main.Objects.Player;
 using Client.Main.Worlds;
@@ -69,6 +69,9 @@ namespace Client.Main.Scenes
         private GameSceneChatController _chatController;
         private GameSceneUiPreloadController _uiPreloadController;
         private GameSceneWindowCloseController _windowCloseController;
+        
+        // Mobile controls
+        private MobileControlsOverlay _mobileControls;
 
         // Performance optimization fields - track object IDs for O(1) lookups
         // ───────────────────────── Properties ─────────────────────────
@@ -256,6 +259,11 @@ namespace Client.Main.Scenes
             _chatInput.MessageSendRequested += _chatController.OnChatMessageSendRequested;
             _uiPreloadController = new GameSceneUiPreloadController(this, _logger);
 
+            // Initialize mobile controls overlay
+            _mobileControls = new MobileControlsOverlay();
+            Controls.Add(_mobileControls);
+            _mobileControls.SetPlayer(_hero);
+            
             // Start pre-loading common UI assets in background to prevent freezes
             // This runs async and won't block scene initialization
             _ = _uiPreloadController.StartPreloadAsync();
@@ -581,6 +589,12 @@ namespace Client.Main.Scenes
             // Handle skill usage with right-click
             _skillController?.HandleRightClickSkillUsage();
             _hotkeys?.HandleInWorld(currentKeyboardState, previousKeyboardState);
+            
+            // Update mobile controls (only visible on touch devices)
+            if (_mobileControls != null)
+            {
+                _mobileControls.Update(gameTime);
+            }
 
             // Update ping every 5 seconds to reduce network overhead
             _pingTimer += gameTime.ElapsedGameTime.TotalSeconds;
@@ -643,6 +657,9 @@ namespace Client.Main.Scenes
                 VaultControl.Instance?.DrawPickedPreview(sprite, gameTime);
                 ChaosMixControl.Instance?.DrawPickedPreview(sprite, gameTime);
                 TradeControl.Instance?.DrawPickedPreview(sprite, gameTime);
+                
+                // Draw mobile controls on top (if visible)
+                _mobileControls?.Draw(gameTime, sprite);
             }
             _characterInfoWindow?.BringToFront();
         }
