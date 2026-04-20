@@ -22,10 +22,27 @@ namespace Client.Main.Controls.UI.Game.Hud
         private Rectangle[] _optionRects;
         private Rectangle[] _checkboxRects;
         
-        private const int PanelWidth = 250;
-        private const int PanelHeight = 300;
-        private const int ButtonWidth = 80;
-        private const int ButtonHeight = 25;
+        private const int PanelWidth = 260;
+        private const int PanelHeight = 320;
+        private const int ButtonWidth = 90;
+        private const int ButtonHeight = 32;
+        private const int CornerRadius = 8;
+
+        // Modern color scheme
+        private static readonly Color PanelBgColor = new Color(20, 24, 32, 220);
+        private static readonly Color PanelBorderColor = new Color(60, 70, 90, 200);
+        private static readonly Color AccentColor = new Color(0, 198, 255);
+        private static readonly Color AccentHoverColor = new Color(0, 220, 255);
+        private static readonly Color SuccessColor = new Color(0, 200, 83);
+        private static readonly Color DangerColor = new Color(255, 82, 82);
+        private static readonly Color TextPrimaryColor = Color.White;
+        private static readonly Color TextSecondaryColor = new Color(180, 180, 180);
+        private static readonly Color CheckboxUncheckedColor = new Color(50, 55, 65);
+        private static readonly Color CheckboxCheckedColor = AccentColor;
+
+        private bool _isToggleButtonHovered;
+        private bool _isSettingsButtonHovered;
+        private int _hoveredOptionIndex = -1;
 
         public MuHelperControl(MuHelper muHelper)
         {
@@ -38,6 +55,10 @@ namespace Client.Main.Controls.UI.Game.Hud
         {
             await base.LoadContent();
             _font = MuGame.Instance.Content.Load<SpriteFont>("Fonts/Default");
+            
+            // Initialize modern renderer
+            ModernUiRenderer.Initialize(MuGame.Instance.GraphicsDevice);
+            
             CalculateLayout();
         }
 
@@ -52,19 +73,19 @@ namespace Client.Main.Controls.UI.Game.Hud
                 (int)position.X,
                 (int)position.Y,
                 PanelWidth,
-                _isCollapsed ? 40 : PanelHeight
+                _isCollapsed ? 50 : PanelHeight
             );
             
             _toggleButtonRect = new Rectangle(
                 _mainRect.X + 10,
-                _mainRect.Y + 8,
+                _mainRect.Y + 10,
                 ButtonWidth,
                 ButtonHeight
             );
             
             _settingsButtonRect = new Rectangle(
                 _toggleButtonRect.Right + 10,
-                _mainRect.Y + 8,
+                _mainRect.Y + 10,
                 ButtonWidth,
                 ButtonHeight
             );
@@ -76,48 +97,32 @@ namespace Client.Main.Controls.UI.Game.Hud
                     _mainRect.X,
                     _mainRect.Bottom + 5,
                     PanelWidth,
-                    200
+                    220
                 );
                 
                 _optionRects = new Rectangle[6];
                 _checkboxRects = new Rectangle[6];
                 
-                int y = _settingsPanelRect.Y + 10;
+                int y = _settingsPanelRect.Y + 15;
                 int optionIndex = 0;
                 
-                // Auto Attack
-                _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 30, y, 200, 20);
-                _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 10, y + 2, 16, 16);
-                y += 25;
-                optionIndex++;
+                string[] optionLabels = new[]
+                {
+                    "Auto Attack",
+                    "Auto Potion (HP)",
+                    "Auto Potion (MP)",
+                    "Auto Buff",
+                    "Return on Low HP",
+                    "Pick Items"
+                };
                 
-                // Auto Potion HP
-                _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 30, y, 200, 20);
-                _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 10, y + 2, 16, 16);
-                y += 25;
-                optionIndex++;
-                
-                // Auto Potion MP
-                _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 30, y, 200, 20);
-                _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 10, y + 2, 16, 16);
-                y += 25;
-                optionIndex++;
-                
-                // Auto Buff
-                _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 30, y, 200, 20);
-                _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 10, y + 2, 16, 16);
-                y += 25;
-                optionIndex++;
-                
-                // Return to Town on Low HP
-                _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 30, y, 200, 20);
-                _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 10, y + 2, 16, 16);
-                y += 25;
-                optionIndex++;
-                
-                // Pick Items
-                _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 30, y, 200, 20);
-                _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 10, y + 2, 16, 16);
+                foreach (var label in optionLabels)
+                {
+                    _optionRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 35, y, 210, 28);
+                    _checkboxRects[optionIndex] = new Rectangle(_settingsPanelRect.X + 12, y + 4, 20, 20);
+                    y += 35;
+                    optionIndex++;
+                }
             }
         }
 
@@ -131,21 +136,40 @@ namespace Client.Main.Controls.UI.Game.Hud
             // Handle mouse input
             var mouseState = MuGame.Instance.Mouse;
             var prevMouseState = MuGame.Instance.PrevMouseState;
+            var mousePos = new Point(mouseState.X, mouseState.Y);
             
+            // Update hover states
+            _isToggleButtonHovered = _toggleButtonRect.Contains(mousePos);
+            _isSettingsButtonHovered = _settingsButtonRect.Contains(mousePos);
+            _hoveredOptionIndex = -1;
+            
+            if (_showSettings && _checkboxRects != null)
+            {
+                for (int i = 0; i < _checkboxRects.Length; i++)
+                {
+                    if (_optionRects[i].Contains(mousePos))
+                    {
+                        _hoveredOptionIndex = i;
+                        break;
+                    }
+                }
+            }
+            
+            // Handle clicks
             if (mouseState.LeftButton == Microsoft.Xna.Framework.Input.ButtonState.Pressed &&
                 prevMouseState.LeftButton == Microsoft.Xna.Framework.Input.ButtonState.Released)
             {
-                var mousePos = new Point(mouseState.X, mouseState.Y);
-                
                 if (_toggleButtonRect.Contains(mousePos))
                 {
                     _muHelper?.Toggle();
+                    SoundController.Instance.PlayBuffer("Sound/iButtonClick.wav");
                 }
                 
                 if (_settingsButtonRect.Contains(mousePos))
                 {
                     _showSettings = !_showSettings;
                     CalculateLayout();
+                    SoundController.Instance.PlayBuffer("Sound/iButtonClick.wav");
                 }
                 
                 // Handle settings clicks
@@ -156,6 +180,7 @@ namespace Client.Main.Controls.UI.Game.Hud
                         if (_checkboxRects[i].Contains(mousePos))
                         {
                             ToggleOption(i);
+                            SoundController.Instance.PlayBuffer("Sound/iButtonClick.wav");
                         }
                     }
                 }
@@ -191,61 +216,105 @@ namespace Client.Main.Controls.UI.Game.Hud
 
         public override void Draw(SpriteBatch spriteBatch)
         {
-            // Draw main panel background
-            var panelColor = _muHelper.IsActive ? 
-                new Color(0, 100, 0, 200) : 
-                new Color(100, 100, 100, 200);
+            // Draw main panel with modern glass effect
+            ModernUiRenderer.DrawGlassPanel(
+                spriteBatch,
+                _mainRect,
+                CornerRadius,
+                PanelBgColor,
+                borderColor: PanelBorderColor,
+                withShadow: true);
+
+            // Draw title bar accent
+            var titleBarRect = new Rectangle(_mainRect.X + CornerRadius, _mainRect.Y + CornerRadius, 
+                _mainRect.Width - 2 * CornerRadius, 3);
+            spriteBatch.Draw(ModernUiRenderer.WhitePixel, titleBarRect, AccentColor);
+
+            // Draw toggle button with modern style
+            Color toggleNormalColor = _muHelper.IsActive ? SuccessColor : DangerColor;
+            Color toggleHoverColor = _muHelper.IsActive ? 
+                new Color(0, 230, 100) : new Color(255, 100, 100);
+            Color togglePressedColor = _muHelper.IsActive ? 
+                new Color(0, 180, 70) : new Color(200, 60, 60);
             
-            spriteBatch.Draw(TextureHelper.WhitePixel, _mainRect, panelColor);
-            
-            // Draw border
-            DrawBorder(spriteBatch, _mainRect, Color.White);
-            
-            // Draw toggle button
-            var toggleColor = _muHelper.IsActive ? 
-                new Color(0, 200, 0) : 
-                new Color(200, 0, 0);
-            spriteBatch.Draw(TextureHelper.WhitePixel, _toggleButtonRect, toggleColor);
-            
+            ModernUiRenderer.DrawModernButton(
+                spriteBatch,
+                _toggleButtonRect,
+                CornerRadius / 2,
+                toggleNormalColor,
+                toggleHoverColor,
+                togglePressedColor,
+                _isToggleButtonHovered,
+                false,
+                _muHelper.IsActive ? "ON" : "OFF",
+                _font,
+                TextPrimaryColor);
+
             // Draw settings button
-            var settingsColor = _showSettings ? 
-                new Color(100, 100, 255) : 
-                new Color(100, 100, 100);
-            spriteBatch.Draw(TextureHelper.WhitePixel, _settingsButtonRect, settingsColor);
+            Color settingsNormalColor = PanelBorderColor;
+            Color settingsHoverColor = AccentColor;
             
-            // Draw labels
-            string statusText = _muHelper.IsActive ? "ON" : "OFF";
-            spriteBatch.DrawString(_font, statusText, 
-                new Vector2(_toggleButtonRect.X + 30, _toggleButtonRect.Y + 4), 
-                Color.White);
-            
-            spriteBatch.DrawString(_font, "Settings", 
-                new Vector2(_settingsButtonRect.X + 10, _settingsButtonRect.Y + 4), 
-                Color.White);
-            
-            // Draw state info
+            ModernUiRenderer.DrawModernButton(
+                spriteBatch,
+                _settingsButtonRect,
+                CornerRadius / 2,
+                settingsNormalColor,
+                settingsHoverColor,
+                AccentColor,
+                _isSettingsButtonHovered,
+                false,
+                "⚙️ Settings",
+                _font,
+                TextPrimaryColor);
+
+            // Draw state info (only when expanded)
             if (!_isCollapsed)
             {
-                int infoY = _mainRect.Y + 45;
-                spriteBatch.DrawString(_font, $"State: {_muHelper.CurrentState}", 
-                    new Vector2(_mainRect.X + 10, infoY), 
-                    Color.Yellow);
+                int infoY = _mainRect.Y + 55;
                 
-                infoY += 20;
+                // State label
+                var stateText = $"State: {_muHelper.CurrentState}";
+                spriteBatch.DrawString(_font, stateText,
+                    new Vector2(_mainRect.X + 15, infoY),
+                    TextSecondaryColor);
+                
+                infoY += 25;
+                
+                // Target info
                 if (_muHelper.CurrentTarget != null)
                 {
-                    spriteBatch.DrawString(_font, $"Target: {_muHelper.CurrentTarget.GetType().Name}", 
-                        new Vector2(_mainRect.X + 10, infoY), 
-                        Color.Orange);
+                    var targetText = $"Target: {_muHelper.CurrentTarget.GetType().Name}";
+                    spriteBatch.DrawString(_font, targetText,
+                        new Vector2(_mainRect.X + 15, infoY),
+                        AccentColor);
                 }
+                
+                // Status indicator dot
+                int dotX = _mainRect.Right - 25;
+                int dotY = _mainRect.Y + 15;
+                int dotSize = 8;
+                Color dotColor = _muHelper.IsActive ? SuccessColor : Color.Gray;
+                spriteBatch.Draw(ModernUiRenderer.WhitePixel,
+                    new Rectangle(dotX, dotY, dotSize, dotSize),
+                    dotColor);
             }
-            
-            // Draw settings panel
+
+            // Draw settings panel with glass effect
             if (_showSettings && _settingsPanelRect != Rectangle.Empty)
             {
-                spriteBatch.Draw(TextureHelper.WhitePixel, _settingsPanelRect, new Color(50, 50, 50, 230));
-                DrawBorder(spriteBatch, _settingsPanelRect, Color.Gray);
-                
+                ModernUiRenderer.DrawGlassPanel(
+                    spriteBatch,
+                    _settingsPanelRect,
+                    CornerRadius,
+                    PanelBgColor,
+                    borderColor: AccentColor * 0.5f,
+                    withShadow: true);
+
+                // Draw header for settings panel
+                var headerText = "⚙️ Helper Settings";
+                var headerPos = new Vector2(_settingsPanelRect.X + 15, _settingsPanelRect.Y + 10);
+                spriteBatch.DrawString(_font, headerText, headerPos, AccentColor);
+
                 var settings = _muHelper.Settings;
                 string[] optionLabels = new[]
                 {
@@ -256,7 +325,7 @@ namespace Client.Main.Controls.UI.Game.Hud
                     "Return on Low HP",
                     "Pick Items"
                 };
-                
+
                 bool[] optionValues = new[]
                 {
                     settings.AutoAttack,
@@ -266,31 +335,37 @@ namespace Client.Main.Controls.UI.Game.Hud
                     settings.ReturnToTownOnLowHP,
                     settings.PickItems
                 };
-                
+
                 for (int i = 0; i < optionLabels.Length && i < _optionRects.Length; i++)
                 {
-                    // Draw checkbox
-                    var checkboxColor = optionValues[i] ? Color.Green : Color.Red;
-                    spriteBatch.Draw(TextureHelper.WhitePixel, _checkboxRects[i], checkboxColor);
-                    
+                    // Highlight hovered option
+                    if (i == _hoveredOptionIndex)
+                    {
+                        var hoverRect = _optionRects[i];
+                        hoverRect.Inflate(4, 2);
+                        spriteBatch.Draw(ModernUiRenderer.WhitePixel, hoverRect, 
+                            new Color(AccentColor.R, AccentColor.G, AccentColor.B, 30));
+                    }
+
+                    // Draw checkbox with modern style
+                    ModernUiRenderer.DrawCheckbox(
+                        spriteBatch,
+                        _checkboxRects[i],
+                        4,
+                        optionValues[i],
+                        CheckboxUncheckedColor,
+                        CheckboxCheckedColor,
+                        Color.Black);
+
                     // Draw label
-                    spriteBatch.DrawString(_font, optionLabels[i], 
-                        new Vector2(_optionRects[i].X, _optionRects[i].Y), 
-                        Color.White);
+                    Color labelColor = (i == _hoveredOptionIndex) ? 
+                        TextPrimaryColor : TextSecondaryColor;
+                    
+                    spriteBatch.DrawString(_font, optionLabels[i],
+                        new Vector2(_optionRects[i].X, _optionRects[i].Y + 4),
+                        labelColor);
                 }
             }
-        }
-
-        private void DrawBorder(SpriteBatch spriteBatch, Rectangle rect, Color color)
-        {
-            // Top
-            spriteBatch.Draw(TextureHelper.WhitePixel, new Rectangle(rect.X, rect.Y, rect.Width, 1), color);
-            // Bottom
-            spriteBatch.Draw(TextureHelper.WhitePixel, new Rectangle(rect.X, rect.Bottom - 1, rect.Width, 1), color);
-            // Left
-            spriteBatch.Draw(TextureHelper.WhitePixel, new Rectangle(rect.X, rect.Y, 1, rect.Height), color);
-            // Right
-            spriteBatch.Draw(TextureHelper.WhitePixel, new Rectangle(rect.Right - 1, rect.Y, 1, rect.Height), color);
         }
 
         public void SetPosition(Vector2 position)
