@@ -1,12 +1,15 @@
 using Client.Main.Objects.Player;
 using Client.Main.Objects.Monsters;
 using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Input.Touch;
 using System;
+using System.Collections.Generic;
 
 namespace Client.Main.Controls.UI.Game.Mobile
 {
     /// <summary>
     /// Mobile control overlay that manages joystick and action buttons
+    /// Implements centralized touch input management for all mobile controls
     /// </summary>
     public class MobileControlsOverlay : UIControl
     {
@@ -18,6 +21,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
         private PlayerObject _player;
         private Vector2 _joystickPosition;
         private bool _isVisible;
+        private List<IMobileInput> _mobileControls;
         
         public bool IsVisible 
         { 
@@ -31,14 +35,23 @@ namespace Client.Main.Controls.UI.Game.Mobile
         
         public VirtualJoystick MovementJoystick => _movementJoystick;
         public MobileActionButton AttackButton => _attackButton;
+        public IReadOnlyList<IMobileInput> MobileControls => _mobileControls.AsReadOnly();
 
         public MobileControlsOverlay()
         {
+            _mobileControls = new List<IMobileInput>();
+            
             // Positions will be set based on screen size in InitializePositions
             _movementJoystick = new VirtualJoystick(Vector2.Zero, 75f);
             _attackButton = new MobileActionButton(Vector2.Zero, 60f, "ATK");
             _skill1Button = new MobileActionButton(Vector2.Zero, 50f, "S1");
             _skill2Button = new MobileActionButton(Vector2.Zero, 50f, "S2");
+            
+            // Add all controls to the mobile controls list
+            _mobileControls.Add(_movementJoystick);
+            _mobileControls.Add(_attackButton);
+            _mobileControls.Add(_skill1Button);
+            _mobileControls.Add(_skill2Button);
             
             SetupButtonEvents();
             
@@ -115,10 +128,20 @@ namespace Client.Main.Controls.UI.Game.Mobile
 
             base.Update(gameTime);
             
-            // Update joystick
-            _movementJoystick.Update(gameTime);
+            // Centralized touch input management
+            var touchState = TouchPanel.GetState();
             
-            // Update buttons
+            // Update all mobile controls with centralized touch state
+            foreach (var control in _mobileControls)
+            {
+                if (control.IsEnabled)
+                {
+                    control.UpdateTouch(touchState);
+                }
+            }
+            
+            // Also update individual controls for backward compatibility
+            _movementJoystick.Update(gameTime);
             _attackButton.Update(gameTime);
             _skill1Button.Update(gameTime);
             _skill2Button.Update(gameTime);
@@ -132,6 +155,32 @@ namespace Client.Main.Controls.UI.Game.Mobile
                     MovePlayer(input, gameTime.ElapsedGameTime);
                 }
             }
+        }
+
+        /// <summary>
+        /// Resets all mobile controls (e.g., when scene changes or game is paused)
+        /// </summary>
+        public void ResetAllControls()
+        {
+            foreach (var control in _mobileControls)
+            {
+                control.Reset();
+            }
+        }
+
+        /// <summary>
+        /// Finds which control contains a specific touch position
+        /// </summary>
+        public IMobileInput GetControlAtPosition(Vector2 touchPosition)
+        {
+            foreach (var control in _mobileControls)
+            {
+                if (control.ContainsTouch(touchPosition))
+                {
+                    return control;
+                }
+            }
+            return null;
         }
 
         private void MovePlayer(Vector2 input, TimeSpan elapsed)

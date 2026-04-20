@@ -8,7 +8,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
     /// <summary>
     /// Virtual joystick for mobile movement control
     /// </summary>
-    public class VirtualJoystick : UIControl
+    public class VirtualJoystick : UIControl, IMobileInput
     {
         private Vector2 _centerPosition;
         private Vector2 _currentPosition;
@@ -16,25 +16,33 @@ namespace Client.Main.Controls.UI.Game.Mobile
         private int? _activeTouchId;
         private bool _isDragging;
         private Vector2 _inputVector;
+        private TouchLocationState _touchState;
         
         // Visual properties
         private Color _baseColor;
         private Color _activeColor;
         private float _baseRadius;
         private float _stickRadius;
+        private static int _nextControlId = 0;
+        private readonly int _controlId;
 
+        public int ControlId => _controlId;
         public Vector2 InputVector => _inputVector;
         public bool IsActive => _isDragging;
+        public bool IsEnabled => Visible && Enabled;
+        public TouchLocationState TouchState => _touchState;
         public float Radius => _radius;
 
         public VirtualJoystick(Vector2 centerPosition, float radius = 75f)
         {
+            _controlId = _nextControlId++;
             _centerPosition = centerPosition;
             _radius = radius;
             _baseRadius = radius;
             _stickRadius = radius * 0.4f;
             _currentPosition = centerPosition;
             _inputVector = Vector2.Zero;
+            _touchState = TouchLocationState.Invalid;
             
             _baseColor = new Color(50, 50, 50, 180);
             _activeColor = new Color(100, 150, 255, 200);
@@ -47,6 +55,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
             var touchState = TouchPanel.GetState();
             bool wasDragging = _isDragging;
             _isDragging = false;
+            _touchState = TouchLocationState.Invalid;
 
             if (_activeTouchId.HasValue)
             {
@@ -57,6 +66,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
                     if (touch.Id == _activeTouchId.Value)
                     {
                         found = true;
+                        _touchState = touch.State;
                         if (touch.State == TouchLocationState.Moved || touch.State == TouchLocationState.Pressed)
                         {
                             UpdateStickPosition(touch.Position.ToVector2());
@@ -87,6 +97,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
                         if (distance <= _radius * 1.5f) // Slightly larger hit area
                         {
                             _activeTouchId = touch.Id;
+                            _touchState = touch.State;
                             UpdateStickPosition(touch.Position.ToVector2());
                             _isDragging = true;
                             break;
@@ -94,6 +105,24 @@ namespace Client.Main.Controls.UI.Game.Mobile
                     }
                 }
             }
+        }
+
+        public void UpdateTouch(TouchCollection touchState)
+        {
+            // This method is called by MobileControlsOverlay for centralized touch management
+            // The main Update method already handles touch processing
+            // This is kept for interface compatibility
+        }
+
+        public void Reset()
+        {
+            ResetStick();
+        }
+
+        public bool ContainsTouch(Vector2 touchPosition)
+        {
+            float distance = Vector2.Distance(touchPosition, _centerPosition);
+            return distance <= _radius * 1.5f;
         }
 
         private void UpdateStickPosition(Vector2 touchPosition)

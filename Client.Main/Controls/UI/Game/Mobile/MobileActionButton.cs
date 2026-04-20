@@ -9,7 +9,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
     /// <summary>
     /// Action button for mobile controls (attack, skills, etc.)
     /// </summary>
-    public class MobileActionButton : UIControl
+    public class MobileActionButton : UIControl, IMobileInput
     {
         private Vector2 _position;
         private float _radius;
@@ -19,19 +19,28 @@ namespace Client.Main.Controls.UI.Game.Mobile
         private Color _baseColor;
         private Color _pressedColor;
         private Color _textColor;
+        private TouchLocationState _touchState;
+        private static int _nextControlId = 0;
+        private readonly int _controlId;
         
         public event Action OnClick;
         public event Action OnPress;
         public event Action OnRelease;
         
+        public int ControlId => _controlId;
         public bool IsPressed => _isPressed;
+        public bool IsActive => _isPressed;
+        public bool IsEnabled => Visible && Enabled;
+        public TouchLocationState TouchState => _touchState;
         public string Label => _label;
 
         public MobileActionButton(Vector2 position, float radius = 50f, string label = "A")
         {
+            _controlId = _nextControlId++;
             _position = position;
             _radius = radius;
             _label = label;
+            _touchState = TouchLocationState.Invalid;
             
             _baseColor = new Color(80, 80, 80, 200);
             _pressedColor = new Color(150, 80, 80, 220);
@@ -45,6 +54,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
             var touchState = TouchPanel.GetState();
             bool wasPressed = _isPressed;
             _isPressed = false;
+            _touchState = TouchLocationState.Invalid;
 
             if (_activeTouchId.HasValue)
             {
@@ -55,6 +65,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
                     if (touch.Id == _activeTouchId.Value)
                     {
                         found = true;
+                        _touchState = touch.State;
                         if (touch.State == TouchLocationState.Moved || touch.State == TouchLocationState.Pressed)
                         {
                             // Check if still within button area
@@ -109,6 +120,7 @@ namespace Client.Main.Controls.UI.Game.Mobile
                         if (distance <= _radius)
                         {
                             _activeTouchId = touch.Id;
+                            _touchState = touch.State;
                             _isPressed = true;
                             if (OnPress != null)
                             {
@@ -119,6 +131,26 @@ namespace Client.Main.Controls.UI.Game.Mobile
                     }
                 }
             }
+        }
+
+        public void UpdateTouch(TouchCollection touchState)
+        {
+            // This method is called by MobileControlsOverlay for centralized touch management
+            // The main Update method already handles touch processing
+            // This is kept for interface compatibility
+        }
+
+        public void Reset()
+        {
+            _activeTouchId = null;
+            _isPressed = false;
+            _touchState = TouchLocationState.Invalid;
+        }
+
+        public bool ContainsTouch(Vector2 touchPosition)
+        {
+            float distance = Vector2.Distance(touchPosition, _position);
+            return distance <= _radius;
         }
 
         public override void Draw(GameTime gameTime, SpriteBatch spriteBatch)
