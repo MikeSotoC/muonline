@@ -8,6 +8,7 @@ using Client.Main.Graphics;
 using Client.Main.Networking;
 using Client.Main.Objects;
 using Client.Main.Scenes;
+using Client.Main.Helpers.MuHelper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Xna.Framework;
@@ -68,6 +69,8 @@ namespace Client.Main
         private Matrix _cachedEffectOrtho;
         private Vector2 _cachedEffectResolution;
         private Vector2 _lastValidMouseInBackBuffer;
+        private MuHelper.MuHelper _muHelper;
+        private Controls.UI.Game.Hud.MuHelperControl _muHelperControl;
 
         // Public Instance Properties
         public BaseScene ActiveScene { get; private set; }
@@ -364,6 +367,11 @@ namespace Client.Main
             var scopeManager = new ScopeManager(AppLoggerFactory, characterState);
             Network = new NetworkManager(AppLoggerFactory, AppSettings, characterState, scopeManager);
             bootLogger.LogInformation("✅ Network Manager initialized.");
+            
+            // --- Initialize MuHelper System ---
+            _muHelper = new MuHelper.MuHelper(characterState, Network);
+            _muHelperControl = new Controls.UI.Game.Hud.MuHelperControl(_muHelper);
+            bootLogger.LogInformation("✅ MuHelper system initialized.");
 
             // Initialize TaskScheduler
             _taskScheduler = new Controllers.TaskScheduler(AppLoggerFactory);
@@ -458,6 +466,9 @@ namespace Client.Main
 
             // Process prioritized tasks using the task scheduler
             _taskScheduler?.ProcessFrame(workScale);
+            
+            // Update MuHelper system
+            _muHelper?.Update(gameTime);
 
             try // outer try
             {
@@ -490,7 +501,7 @@ namespace Client.Main
                     // Exit();
                 }
             }
-            catch (Exception e) // Catch other unexpected errors in Update
+            catch (Exception e) // Catch other unexpected errors in Update loop (outside scene/base update)
             {
                 _logger?.LogCritical(e, "Unhandled exception in MuGame.Update loop (outside scene/base update)!");
                 // Exit();
@@ -560,6 +571,15 @@ namespace Client.Main
                 {
                     DrawSceneDirectToBackBuffer(gameTime);
                 }
+                
+                // Draw MuHelper UI overlay
+                if (_muHelperControl != null && _muHelper != null && _muHelper.IsActive)
+                {
+                    SpriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend);
+                    _muHelperControl.Draw(SpriteBatch);
+                    SpriteBatch.End();
+                }
+                
                 base.Draw(gameTime);
             }
             catch (Exception e)
