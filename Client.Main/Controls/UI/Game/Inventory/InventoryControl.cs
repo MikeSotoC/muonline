@@ -1203,6 +1203,7 @@ namespace Client.Main.Controls.UI.Game.Inventory
             _itemGrid = new InventoryItem[Columns, Rows];
             _equippedItems.Clear();
             _bmdPreviewCache.Clear();
+            _itemTextureCache.Clear(); // Clear texture cache to prevent stale references
 
             var characterItems = _network_manager_getitems();
             const string defaultItemIconTexturePath = "Interface/newui_item_box.tga";
@@ -2172,7 +2173,8 @@ namespace Client.Main.Controls.UI.Game.Inventory
 
                 if (itemTexture != null)
                 {
-                    spriteBatch.Draw(itemTexture, itemRect, Color.White);
+                    // Ensure we don't draw with transparent color - force full opacity
+                    spriteBatch.Draw(itemTexture, itemRect, Color.White * Alpha);
 
                     if (JewelShineOverlay.ShouldShine(item))
                     {
@@ -2181,8 +2183,8 @@ namespace Client.Main.Controls.UI.Game.Inventory
                 }
                 else
                 {
-                    // Placeholder
-                    ItemGridRenderHelper.DrawItemPlaceholder(spriteBatch, pixel, font, itemRect, item, Theme.BgLighter, Theme.TextGray * 0.8f);
+                    // Placeholder - ensure background is visible
+                    ItemGridRenderHelper.DrawItemPlaceholder(spriteBatch, pixel, font, itemRect, item, Theme.BgLighter * Alpha, Theme.TextGray * 0.8f * Alpha);
                 }
 
                 // Stack count
@@ -2225,11 +2227,13 @@ namespace Client.Main.Controls.UI.Game.Inventory
 
                 if (itemTexture != null)
                 {
-                    spriteBatch.Draw(itemTexture, itemRect, Color.White);
+                    // Ensure full opacity for equipped items
+                    spriteBatch.Draw(itemTexture, itemRect, Color.White * Alpha);
                 }
                 else if (GraphicsManager.Instance?.Pixel != null)
                 {
-                    spriteBatch.Draw(GraphicsManager.Instance.Pixel, itemRect, new Color(40, 40, 40, 200));
+                    // Draw placeholder with visible background
+                    spriteBatch.Draw(GraphicsManager.Instance.Pixel, itemRect, new Color(40, 40, 40, 200) * Alpha);
                 }
             }
         }
@@ -2244,7 +2248,9 @@ namespace Client.Main.Controls.UI.Game.Inventory
             string texturePath = item.Definition?.TexturePath;
             if (string.IsNullOrEmpty(texturePath))
             {
-                return null;
+                // Fallback to default texture if path is missing
+                var fallbackTexture = TextureLoader.Instance.GetTexture2D("Interface/newui_item_box.tga");
+                return fallbackTexture;
             }
 
             bool isBmd = texturePath.EndsWith(".bmd", StringComparison.OrdinalIgnoreCase);
@@ -2260,8 +2266,11 @@ namespace Client.Main.Controls.UI.Game.Inventory
                 if (texture != null)
                 {
                     _itemTextureCache[texturePath] = texture;
+                    return texture;
                 }
-                return texture;
+                
+                // If texture failed to load, try fallback
+                return TextureLoader.Instance.GetTexture2D("Interface/newui_item_box.tga");
             }
 
             bool isHovered = item == _hoveredItem;
@@ -2291,7 +2300,7 @@ namespace Client.Main.Controls.UI.Game.Inventory
                 }
                 catch
                 {
-                    return null;
+                    // Fall back to static preview on error
                 }
             }
 
@@ -2308,13 +2317,16 @@ namespace Client.Main.Controls.UI.Game.Inventory
                 if (previewTexture != null)
                 {
                     _bmdPreviewCache[cacheKey] = previewTexture;
+                    return previewTexture;
                 }
-                return previewTexture;
             }
             catch
             {
-                return null;
+                // Fall through to placeholder
             }
+            
+            // Return null to trigger placeholder rendering
+            return null;
         }
 
         private void DrawGridOverlays(SpriteBatch spriteBatch)

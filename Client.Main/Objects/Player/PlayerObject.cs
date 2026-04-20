@@ -3836,10 +3836,20 @@ namespace Client.Main.Objects.Player
                 {
                     _helmModelPath = modelPath;
                 }
+                
+                // Clear old model first to ensure clean state
+                part.Model = null;
+                part.InvalidateBuffers(BUFFER_FLAG_ALL);
+                
                 part.Model = await BMDLoader.Instance.Prepare(modelPath);
                 if (part.Model == null)
                 {
                     _logger?.LogWarning("[PlayerObject] Failed to load model {Path} for {Part}", modelPath, part.GetType().Name);
+                }
+                else
+                {
+                    // Force buffer rebuild after new model is loaded
+                    part.InvalidateBuffers(BUFFER_FLAG_ALL);
                 }
             }
         }
@@ -3852,6 +3862,9 @@ namespace Client.Main.Objects.Player
             part.ItemLevel = itemDetails.Level;
             part.IsExcellentItem = itemDetails.IsExcellent;
             part.IsAncientItem = itemDetails.IsAncient;
+            
+            // Force shader to update by invalidating material buffers
+            part.InvalidateBuffers(BUFFER_FLAG_MATERIAL);
         }
 
         /// <summary>
@@ -3984,6 +3997,10 @@ namespace Client.Main.Objects.Player
             var itemDef = ItemDatabase.GetItemDefinition(equipmentData.ItemGroup, (short)equipmentData.ItemNumber);
             if (itemDef != null && !string.IsNullOrEmpty(itemDef.TexturePath))
             {
+                // Clear old model and buffers first
+                weapon.Model = null;
+                weapon.InvalidateBuffers(BUFFER_FLAG_ALL);
+                
                 weapon.Model = await BMDLoader.Instance.Prepare(itemDef.TexturePath);
                 weapon.LinkParentAnimation = false;
                 SetItemPropertiesFromEquipmentData(weapon, equipmentData);
@@ -4003,8 +4020,10 @@ namespace Client.Main.Objects.Player
             {
                 string playerTexturePath = itemDef.TexturePath.Replace("Item/", "Player/");
 
-                // Clear old model first
+                // Clear old model and buffers first
                 armorPart.Model = null;
+                armorPart.InvalidateBuffers(BUFFER_FLAG_ALL);
+                
                 await LoadPartAsync(armorPart, playerTexturePath);
                 SetItemPropertiesFromEquipmentData(armorPart, equipmentData);
             }
@@ -4063,6 +4082,9 @@ namespace Client.Main.Objects.Player
             part.ItemLevel = equipmentData.ItemLevel;
             part.IsExcellentItem = equipmentData.ExcellentFlags > 0;
             part.IsAncientItem = equipmentData.AncientDiscriminator > 0;
+            
+            // Force shader to update by invalidating material buffers
+            part.InvalidateBuffers(BUFFER_FLAG_MATERIAL);
         }
 
         private void ClearItemProperties(ModelObject part)
