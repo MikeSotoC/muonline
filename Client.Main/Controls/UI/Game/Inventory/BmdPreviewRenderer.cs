@@ -404,7 +404,7 @@ namespace Client.Main.Controls.UI.Game.Inventory
             DepthStencilState originalDepthStencilState = null;
             RasterizerState originalRasterizerState = null;
             SamplerState originalSamplerState = null;
-            bool capturedStates = false;
+            bool capturedStates = true;
             try
             {
                 var modelTask = BMDLoader.Instance.Prepare(def.TexturePath);
@@ -442,9 +442,11 @@ namespace Client.Main.Controls.UI.Game.Inventory
                 capturedStates = true;
 
                 gd.SetRenderTarget(rt);
-                gd.Clear(Color.Transparent);
+                // Use opaque black background instead of transparent to prevent alpha issues
+                gd.Clear(new Color(0, 0, 0, 255));
 
-                gd.BlendState = BlendState.AlphaBlend;
+                // Set proper blend state for rendering with transparency
+                gd.BlendState = BlendState.NonPremultiplied;
                 gd.DepthStencilState = DepthStencilState.Default;
                 gd.RasterizerState = RasterizerState.CullNone;
                 gd.SamplerStates[0] = GraphicsManager.GetQualityLinearSamplerState();

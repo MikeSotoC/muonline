@@ -1202,8 +1202,17 @@ namespace Client.Main.Controls.UI.Game.Inventory
             _items.Clear();
             _itemGrid = new InventoryItem[Columns, Rows];
             _equippedItems.Clear();
+            
+            // Clear all caches to prevent stale textures and models
+            foreach (var entry in _bmdPreviewCache.Values)
+            {
+                entry?.Dispose();
+            }
             _bmdPreviewCache.Clear();
-            _itemTextureCache.Clear(); // Clear texture cache to prevent stale references
+            _itemTextureCache.Clear();
+            
+            // Force graphics device to reset any cached states
+            GraphicsManager.Instance?.GraphicsDevice?.Textures[0] = null;
 
             var characterItems = _network_manager_getitems();
             const string defaultItemIconTexturePath = "Interface/newui_item_box.tga";
@@ -2250,6 +2259,11 @@ namespace Client.Main.Controls.UI.Game.Inventory
             {
                 // Fallback to default texture if path is missing
                 var fallbackTexture = TextureLoader.Instance.GetTexture2D("Interface/newui_item_box.tga");
+                // If fallback is also null or too small, create a solid white pixel texture
+                if (fallbackTexture == null || fallbackTexture.Width < 4)
+                {
+                    return GraphicsManager.Instance.Pixel;
+                }
                 return fallbackTexture;
             }
 
@@ -2269,8 +2283,15 @@ namespace Client.Main.Controls.UI.Game.Inventory
                     return texture;
                 }
                 
-                // If texture failed to load, try fallback
-                return TextureLoader.Instance.GetTexture2D("Interface/newui_item_box.tga");
+                // If texture failed to load, try fallback with validation
+                var fallback = TextureLoader.Instance.GetTexture2D("Interface/newui_item_box.tga");
+                if (fallback != null && fallback.Width >= 4)
+                {
+                    return fallback;
+                }
+                
+                // Last resort: use solid pixel
+                return GraphicsManager.Instance.Pixel;
             }
 
             bool isHovered = item == _hoveredItem;
