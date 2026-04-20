@@ -91,6 +91,8 @@ namespace Client.Main.Core.Models
         public string Name { get; set; }
         public CharacterClassNumber Class { get; set; } // Player's character class.
         public ReadOnlyMemory<byte> AppearanceData { get; set; }
+        public uint GuildId { get; set; }
+        public byte GuildRole { get; set; }
 
         public override ScopeObjectType ObjectType => ScopeObjectType.Player;
 
@@ -104,6 +106,8 @@ namespace Client.Main.Core.Models
             Name = name;
             Class = cls;
             AppearanceData = appearanceData;
+            GuildId = 0;
+            GuildRole = 0;
         }
 
         public void Reset(ushort maskedId, ushort rawId, byte x, byte y, string name,
@@ -116,12 +120,14 @@ namespace Client.Main.Core.Models
             Name = name;
             Class = cls;
             AppearanceData = appearanceData;
+            GuildId = 0;
+            GuildRole = 0;
             LastUpdate = DateTime.UtcNow;
         }
 
         // Methods
         public override string ToString()
-            => $"ID: {Id:X4} ({RawId:X4})  Player: {Name}  Class: {Class}  @[{PositionX},{PositionY}]";
+            => $"ID: {Id:X4} ({RawId:X4})  Player: {Name}  Class: {Class}  Guild: {GuildId}  @[{PositionX},{PositionY}]";
     }
 
     /// <summary>

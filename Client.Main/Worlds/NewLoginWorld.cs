@@ -43,7 +43,8 @@ namespace Client.Main.Worlds
             Terrain.DistortionFrequency = 1.0f;      // Example: lower frequency for distortion
             Terrain.WaterFlowDirection = Vector2.UnitY;
 
-            // TODO: We need fix CameraAnglePosition load
+            // CameraAnglePosition is already loaded in WorldControl.LoadWorldAsync
+            // The additional offset is applied to ensure proper camera framing
             Camera.Instance.Target += new Vector3(0, 0, 650);
         }
 

@@ -1,21 +1,16 @@
 ```
 # Compiled and build artifacts
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.out
+*.class
 *.pyc
 __pycache__/
-*.o
-*.obj
-*.dll
 *.so
-*.exe
-*.class
 *.a
-*.lib
-obj/
-bin/
-out/
-dist/
-build/
-target/
 
 # Dependencies
 node_modules/
@@ -25,40 +20,64 @@ venv/
 .env.local
 *.env.*
 
+# Build directories
+dist/
+build/
+target/
+bin/
+obj/
+
 # Logs and temp files
 *.log
 *.tmp
 *.swp
 *.swo
-*.bak
-*.cache
-.DS_Store
-Thumbs.db
 
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
+*.userprefs
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
 
-# Coverage
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+.CFUserTextEncoding
+
+# Testing
 coverage/
 htmlcov/
 .coverage
+*.cover
+*.py,cover
 
-# Python specific
-*.pyc
-__pycache__/
-*.pyo
-*.pyd
-.Python
-*.so
-.Python
-*.egg-info/
-.eggs/
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
 
-# Build systems
+# Pytest
+.pytest_cache/
+
+# Gradle
 .gradle/
-build/
-target/
+
+# Coverage
+coverage.xml
+*.gcda
+*.gcno
+
+# JetBrains IDEs
+*.iml
+*.iws
+*.ipr
+out/
+
+# Visual Studio Code
+.vscode/settings.json
 ```

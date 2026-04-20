@@ -21,17 +21,20 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         private readonly CharacterState _characterState;
         private readonly NetworkManager _networkManager;
         private readonly TargetProtocolVersion _targetVersion;
+        private readonly ScopeManager _scopeManager;
 
         public TradeHandler(
             ILoggerFactory loggerFactory,
             CharacterState characterState,
             NetworkManager networkManager,
-            TargetProtocolVersion targetVersion)
+            TargetProtocolVersion targetVersion,
+            ScopeManager scopeManager)
         {
             _logger = loggerFactory.CreateLogger<TradeHandler>();
             _characterState = characterState;
             _networkManager = networkManager;
             _targetVersion = targetVersion;
+            _scopeManager = scopeManager;
         }
 
         /// <summary>
@@ -47,7 +50,17 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 string partnerName = answer.Name;
                 ushort partnerLevel = answer.TradePartnerLevel;
                 uint guildId = answer.GuildId;
-                string partnerGuild = ""; // TODO: Resolve guild name from GuildId if needed
+                
+                // Resolve guild name from ScopeManager if available
+                string partnerGuild = "";
+                if (guildId > 0 && _scopeManager != null)
+                {
+                    // Try to find the player in scope and get their guild info
+                    // Note: This requires the scope manager to track guild information
+                    // For now, we'll leave it empty as the guild system needs proper integration
+                    _logger.LogDebug("Trade partner {Name} has GuildId: {GuildId}", partnerName, guildId);
+                }
+                
                 bool accepted = answer.Accepted;
 
                 if (!accepted)

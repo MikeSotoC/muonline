@@ -45,12 +45,21 @@ namespace Client.Main.Models
             // Each direction covers 45 degrees. Offset by 22.5 to center the zones.
             int index = (int)System.Math.Floor((degrees + 22.5f) / 45.0f) % 8;
 
-            // Order: W(0), SW(1), S(2), SE(3), E(4), NE(5), N(6), NW(7)
-            // Client uses different order. This mapping is for server-like directions if needed.
-            // For client facing, it might be simpler:
-            // Angle 0 (East in XNA) might be North-East on map.
-            // This needs careful checking against how player Angle.Z is interpreted visually.
-            return (Direction)index; // This is a direct mapping. Adjust if visual rotation differs. //TODO: wrong angle
+            // Mapping based on GetDirectionFromAngle and visual rotation in MuOnline
+            // Index 0: 0° → SouthWest, Index 1: 45° → South, etc.
+            Direction[] mapping =
+            [
+                Direction.SouthWest,  // 0°
+                Direction.South,      // 45°
+                Direction.SouthEast,  // 90°
+                Direction.East,       // 135°
+                Direction.NorthEast,  // 180°
+                Direction.North,      // 225°
+                Direction.NorthWest,  // 270°
+                Direction.West        // 315°
+            ];
+            
+            return mapping[index];
         }
 
         /// <summary>
